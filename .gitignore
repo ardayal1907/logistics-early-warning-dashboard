@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# Model artefaktları
+*.pkl
+*.joblib
+
+# ISTISNA: üretim modeli repoya DAHIL edilmelidir.
+# Streamlit Cloud deploy'da uygulama bu dosyayı repodan yükler; ignore edilirse
+# deploy sırasında model bulunamaz ve uygulama açılışta çöker.
+!models/production_risk_model.pkl
+!models/production_risk_model_metadata.json
+
+# Notebook'un ürettiği demo artefaktları - üretim değil, repoya gerekmez.
+# (Notebook bunları çalıştırıldığı dizine yazar, bu yüzden ** ile de eşliyoruz.)
+demo_logistics_risk_model.pkl
+demo_risk_model_output.csv
+**/demo_logistics_risk_model.pkl
+**/demo_risk_model_output.csv
+
+# NOT: data/ klasörü BİLEREK ignore EDİLMEMİŞTİR. Power BI raporu ve Streamlit
+# demosu repo klonlandığı anda çalışabilmelidir; üretilmiş CSV'ler bu yüzden
+# repoya dahildir. Veri sentetiktir, gizlilik riski yoktur, toplamı ~1.5 MB'dır.
+
+# Yerel yedekler
+backup_v*/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,20 @@
+# Sürümler PİNLENMİŞTİR - bu bir tercih değil, zorunluluk.
+#
+# models/production_risk_model.pkl bir pickle'dır ve scikit-learn nesnelerinin
+# iç yapısı sürümler arasında değişir. Streamlit Cloud farklı bir scikit-learn
+# kurarsa model ya InconsistentVersionWarning ile yüklenir ve SESSİZCE farklı
+# tahmin üretir, ya da doğrudan çöker. scikit-learn sürümü, modeli eğiten
+# sürümle AYNI olmalıdır.
+#
+# Model bu sürümlerle eğitildi (models/production_risk_model_metadata.json
+# içindeki "versions" alanı ile karşılaştırılabilir):
+#   python 3.12.10 · scikit-learn 1.9.0 · numpy 2.5.1 · pandas 3.0.5
+#
+# Modeli yeniden eğitirseniz bu dosyayı da güncelleyin.
+
+streamlit==1.60.0
+scikit-learn==1.9.0
+pandas==3.0.5
+numpy==2.5.1
+joblib==1.5.3
+scipy==1.18.0
