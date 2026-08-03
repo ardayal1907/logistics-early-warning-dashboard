@@ -1,3 +1,5 @@
+🔗 **[Canlı Demo](https://arda-lojistik-panel.streamlit.app)**
+
 # 🚚 AI-Powered Logistics Early Warning & Carbon Footprint Management Dashboard
 
 **End-to-end analytics solution combining Machine Learning delay-risk prediction with a Power BI Star Schema data model to help logistics operations teams act on shipment risk before it happens — while quantifying the financial cost of their carbon footprint.**
