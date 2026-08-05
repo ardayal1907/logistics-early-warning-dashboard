@@ -1,47 +1,61 @@
 """
-Akıllı Lojistik ve Yeşil Tedarik Zinciri - Sentetik Veri Üretici
+Smart Logistics & Green Supply Chain - Synthetic Data Generator
 ==================================================================
-1500 satırlık gerçekçi sentetik lojistik verisi üretir.
-- Gecikme (Actual_Delay_Days): İki aşamalı "zero-inflated" (hurdle) modelle
-  üretilir — önce sevkiyatın gecikip gecikmeyeceğine karar verilir, sonra
-  yalnızca gecikenler için gün sayısı çekilir. Ayrıntı için bkz. Bölüm 3.
-- CO2_Emission_kg: Mesafe, tonaj ve araç tipine göre gerçekçi emisyon
-  faktörleriyle hesaplanır.
+Generates 1,500 rows of realistic synthetic logistics data.
+- Delay (Actual_Delay_Days): produced by a two-stage "zero-inflated" (hurdle)
+  model — first it is decided whether the shipment is late at all, then a
+  number of days is drawn only for the late ones. See build_delays().
+- CO2_Emission_kg: computed from distance, tonnage and vehicle type using the
+  emission factors in config.py.
 
-Neden zero-inflated? (v2 revizyonu)
------------------------------------
-Önceki sürüm gecikmeyi toplamsal (additive) bir skordan üretiyordu ve tüm
-bileşenler pozitif olduğu için sevkiyatların **%91'i** gecikiyordu. Sonuçları:
+Why zero-inflated? (v2 revision)
+--------------------------------
+The previous version produced delay from an additive score, and because every
+component was positive, **91%** of shipments ended up late. Consequences:
 
-  * Storm / Snow / High-traffic altında gecikme oranı %100'e dayanıyordu — yani
-    bu değişkenlerin hiçbir AYRIM GÜCÜ kalmıyordu (tavan etkisi).
-  * Aşağı akıştaki Power BI raporunda `High Risk Rate %` = %84.3 çıkıyordu.
-    Sevkiyatların %84'ünün kırmızı yandığı bir "Erken Uyarı Paneli" hiçbir şey
-    uyarmaz; bir alarm ancak seyrek ateşlediğinde bilgi taşır.
+  * Under Storm / Snow / High traffic the delay rate approached 100% — meaning
+    those variables lost all DISCRIMINATING POWER (a ceiling effect).
+  * Downstream, the Power BI report showed `High Risk Rate %` = 84.3%. An
+    "Early Warning Panel" where 84% of shipments glow red warns of nothing; an
+    alert only carries information when it fires rarely.
 
-Gerçek lojistikte gecikmeler SEYREK ama KUYRUKLUDUR. Bu yüzden süreç ikiye
-ayrıldı: gecikme olasılığı (lojistik) ve gecikme şiddeti (kesilmiş Poisson).
-Hedef gecikme oranı ~%22.
+In real logistics, delays are RARE but HEAVY-TAILED. The process was therefore
+split in two: delay probability (logistic) and delay severity (truncated
+Poisson). Target delay rate ~22%.
+
+⚠️ A NOTE ON RANDOMNESS AND FUNCTION ORDER
+   The output is reproducible only because a single seeded Generator is drawn
+   from in a fixed order. The functions below take that generator as an argument
+   and MUST be called in the order main() calls them. Reordering two calls — even
+   without changing any logic — shifts every subsequent draw and produces a
+   completely different dataset. The test suite pins the resulting hash.
+
+Importing this module has no side effects: nothing runs until main() is called.
 """
 
+import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-# Yollar repo köküne göre çözülür; script'i hangi dizinden çağırdığınız fark etmez.
+# Paths resolve relative to the repository root, so it does not matter which
+# directory you invoke the script from.
 ROOT = Path(__file__).resolve().parent.parent
 RAW_DIR = ROOT / "data" / "raw"
-RAW_DIR.mkdir(parents=True, exist_ok=True)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# Tekrarlanabilirlik için sabit seed
+# The carbon model lives in one place only - see src/config.py.
+from config import (  # noqa: E402
+    EMISSION_FACTOR, BASE_EMISSION, WEATHER_CO2_MULT, TRAFFIC_CO2_MULT, MIN_CO2_KG,
+)
+
+# Fixed seed for reproducibility
 RNG_SEED = 42
-rng = np.random.default_rng(RNG_SEED)
-
 N_ROWS = 1500
 
 # ---------------------------------------------------------------------------
-# 1) Sabit tanımlar / referans listeleri
+# 1) Constants / reference lists
 # ---------------------------------------------------------------------------
 
 CITIES = [
@@ -54,58 +68,50 @@ CITIES = [
 VENDOR_COUNT = 25
 VENDOR_IDS = [f"VEND-{str(i).zfill(3)}" for i in range(1, VENDOR_COUNT + 1)]
 
-# Her tedarikçiye sabit bir "kalite" puanı atanır (1.0 - 5.0 arası),
-# böylece aynı tedarikçinin siparişlerinde tutarlı bir performans profili olur.
-vendor_base_rating = {
-    vid: round(rng.uniform(1.5, 5.0), 1) for vid in VENDOR_IDS
-}
-
 WEATHER_CONDITIONS = ["Normal", "Rain", "Storm", "Snow"]
 
 # ---------------------------------------------------------------------------
-# MEVSİMSELLİK - hava koşulu artık aya bağlı (kuzey yarımküre döngüsü)
+# SEASONALITY - weather is month-dependent (Northern Hemisphere cycle)
 # ---------------------------------------------------------------------------
-# Önceki sürümde hava tüm yıl boyunca sabit [0.60, 0.20, 0.10, 0.10]
-# dağılımından çekiliyordu; yani Ocak ile Temmuz arasında hiçbir fark yoktu.
-# Bu, zaman boyutunu anlamsız kılıyordu: kronolojik bir train/test bölmesi
-# rastgele bölmeden farksız olurdu.
+# In an earlier version weather was drawn from a fixed [0.60, 0.20, 0.10, 0.10]
+# distribution all year round, so January and July were indistinguishable. That
+# made the time dimension meaningless: a chronological train/test split would
+# have been no different from a random one.
 #
-# TASARIM KURALI: Mevsimsellik yalnızca hangi hava koşulunun HANGİ AYDA daha
-# sık görüldüğünü belirler. Havanın gecikmeye etkisi (weather_logit) ve
-# tedarikçiyle etkileşimi (weather_vendor_amp) HİÇ DEĞİŞMEZ. Yeni bir sinyal
-# eklenmiyor; var olan sinyale bir zaman düzeni kazandırılıyor:
+# DESIGN RULE: seasonality only determines WHICH MONTH each weather condition is
+# more frequent in. The effect of weather on delay (WEATHER_LOGIT) and its
+# interaction with the vendor (WEATHER_VENDOR_AMP) DO NOT CHANGE AT ALL. No new
+# signal is introduced; the existing signal is merely given a temporal order:
 #
-#     ay  ->  hava dağılımı  ->  (hava x tedarikçi)  ->  gecikme
+#     month  ->  weather distribution  ->  (weather x vendor)  ->  delay
 #
-# Aylık dağılımlar, yıllık MARJİNAL dağılım eski [0.60, 0.20, 0.10, 0.10]
-# değerine yakın kalacak şekilde seçilmiştir (script sonunda doğrulanır).
-# Böylece genel gecikme oranı ve etkileşim yapısı korunur, değişen tek şey
-# bunların yıl içine nasıl dağıldığıdır.
+# The monthly distributions were chosen so that the annual MARGINAL distribution
+# stays close to the old [0.60, 0.20, 0.10, 0.10] (verified by print_summary).
 #
 #                     Normal  Rain  Storm  Snow
 MONTHLY_WEATHER_PROBS = {
-    1:  [0.30, 0.15, 0.17, 0.38],   # Ocak    - kışın zirvesi, kar baskın
-    2:  [0.32, 0.15, 0.17, 0.36],   # Şubat   - hâlâ sert kış
-    3:  [0.50, 0.25, 0.12, 0.13],   # Mart    - geçiş, kar azalıyor
-    4:  [0.62, 0.28, 0.08, 0.02],   # Nisan   - ilkbahar yağmurları
-    5:  [0.70, 0.25, 0.05, 0.00],   # Mayıs   - yağmurlu ama ılıman
-    6:  [0.82, 0.14, 0.04, 0.00],   # Haziran - yaz başlıyor
-    7:  [0.88, 0.09, 0.03, 0.00],   # Temmuz  - yılın en açık ayı
-    8:  [0.87, 0.10, 0.03, 0.00],   # Ağustos - açık, seyrek sağanak
-    9:  [0.75, 0.19, 0.06, 0.00],   # Eylül   - sonbahar başlangıcı
-    10: [0.62, 0.28, 0.09, 0.01],   # Ekim    - sonbahar yağmurları
-    11: [0.45, 0.27, 0.14, 0.14],   # Kasım   - ilk kar ve fırtınalar
-    12: [0.33, 0.16, 0.16, 0.35],   # Aralık  - kış bastırıyor
+    1:  [0.30, 0.15, 0.17, 0.38],   # January   - peak winter, snow dominates
+    2:  [0.32, 0.15, 0.17, 0.36],   # February  - still harsh winter
+    3:  [0.50, 0.25, 0.12, 0.13],   # March     - transition, snow receding
+    4:  [0.62, 0.28, 0.08, 0.02],   # April     - spring rains
+    5:  [0.70, 0.25, 0.05, 0.00],   # May       - rainy but mild
+    6:  [0.82, 0.14, 0.04, 0.00],   # June      - summer beginning
+    7:  [0.88, 0.09, 0.03, 0.00],   # July      - clearest month of the year
+    8:  [0.87, 0.10, 0.03, 0.00],   # August    - clear, occasional downpour
+    9:  [0.75, 0.19, 0.06, 0.00],   # September - start of autumn
+    10: [0.62, 0.28, 0.09, 0.01],   # October   - autumn rains
+    11: [0.45, 0.27, 0.14, 0.14],   # November  - first snow and storms
+    12: [0.33, 0.16, 0.16, 0.35],   # December  - winter sets in
 }
 
-# Aylık sevkiyat hacmi (göreli ağırlık). Yıl sonu tatil/kampanya sezonunda
-# hacim artar - lojistikte iyi bilinen bir örüntü.
+# Monthly shipment volume (relative weight). Volume rises in the year-end
+# holiday/campaign season - a well-known pattern in logistics.
 MONTHLY_VOLUME_WEIGHTS = {
     1: 0.85, 2: 0.80, 3: 0.90, 4: 0.95, 5: 1.00, 6: 1.00,
     7: 0.95, 8: 0.90, 9: 1.05, 10: 1.10, 11: 1.25, 12: 1.35,
 }
 
-# Veri son 12 ayı kapsar.
+# The data spans the last 12 months.
 DATA_END_DATE = pd.Timestamp("2026-07-31")
 DATA_START_DATE = DATA_END_DATE - pd.DateOffset(months=12) + pd.Timedelta(days=1)
 
@@ -113,129 +119,48 @@ TRAFFIC_LEVELS = ["Low", "Medium", "High"]
 TRAFFIC_PROBS = [0.35, 0.40, 0.25]
 
 VEHICLE_TYPES = ["Diesel Truck", "Electric Semi", "Hybrid Van"]
-VEHICLE_PROBS = [0.55, 0.20, 0.25]  # Filo hala çoğunlukla dizel
+VEHICLE_PROBS = [0.55, 0.20, 0.25]  # the fleet is still mostly diesel
 
-# Araç tipine göre gerçekçi CO2 emisyon faktörü (kg CO2 / ton-km)
-# Referans aralıklar (yaklaşık, literatürden esinlenilmiştir):
-#   Dizel kamyon (ağır yük):  ~0.10 - 0.16 kgCO2/ton-km
-#   Elektrikli yarı römork:    ~0.02 - 0.045 kgCO2/ton-km (şebeke karbon yoğunluğuna bağlı)
-#   Hibrit van:                ~0.06 - 0.10 kgCO2/ton-km
-EMISSION_FACTOR = {
-    "Diesel Truck": 0.13,
-    "Electric Semi": 0.035,
-    "Hybrid Van": 0.08,
-}
-
-# Araç tipine göre sabit (idle/başlangıç) emisyon bileşeni (kg) - motor çalıştırma,
-# yükleme/boşaltma sırasında oluşan ek emisyon
-BASE_EMISSION = {
-    "Diesel Truck": 8.0,
-    "Electric Semi": 1.5,
-    "Hybrid Van": 4.0,
-}
-
-# ---------------------------------------------------------------------------
-# 2) Temel sütunların üretimi
-# ---------------------------------------------------------------------------
-
-shipment_ids = [f"SHP-{str(i).zfill(5)}" for i in range(1, N_ROWS + 1)]
-vendor_ids = rng.choice(VENDOR_IDS, size=N_ROWS)
-
-# Vendor_Rating: tedarikçinin temel puanı etrafında küçük gürültü ekleyerek
-# gerçekçi çeşitlilik sağlanır (sevkiyat bazında hafif dalgalanma).
-vendor_ratings = np.array([
-    np.clip(vendor_base_rating[vid] + rng.normal(0, 0.15), 1.0, 5.0)
-    for vid in vendor_ids
-]).round(1)
-
-# Origin / Destination: aynı şehir olamaz
-origins = rng.choice(CITIES, size=N_ROWS)
-destinations = []
-for o in origins:
-    choices = [c for c in CITIES if c != o]
-    destinations.append(rng.choice(choices))
-destinations = np.array(destinations)
-
-distance_km = rng.uniform(50, 1200, size=N_ROWS).round(1)
-weight_tons = rng.uniform(1, 25, size=N_ROWS).round(2)
-
-# ---------------------------------------------------------------------------
-# 2b) Shipment_Date - son 12 aya mevsimsel hacimle dağıt
-# ---------------------------------------------------------------------------
-all_days = pd.date_range(DATA_START_DATE, DATA_END_DATE, freq="D")
-day_weights = np.array([MONTHLY_VOLUME_WEIGHTS[d.month] for d in all_days], dtype=float)
-day_weights /= day_weights.sum()
-
-shipment_dates = pd.DatetimeIndex(
-    rng.choice(all_days, size=N_ROWS, p=day_weights)
-).sort_values()          # kronolojik sıra: Shipment_ID zaman sırasını takip etsin
-
-months = shipment_dates.month.to_numpy()
-
-# Hava koşulu AYA BAĞLI çekiliyor (mevsimsellik burada devreye giriyor).
-weather = np.empty(N_ROWS, dtype=object)
-for m, probs in MONTHLY_WEATHER_PROBS.items():
-    mask = months == m
-    if mask.any():
-        weather[mask] = rng.choice(WEATHER_CONDITIONS, size=int(mask.sum()), p=probs)
-weather = weather.astype(str)
-
-# Trafik ve araç tipi mevsimsel DEĞİL - kapsamı bilinçli olarak dar tutuyoruz.
-traffic = rng.choice(TRAFFIC_LEVELS, size=N_ROWS, p=TRAFFIC_PROBS)
-vehicle = rng.choice(VEHICLE_TYPES, size=N_ROWS, p=VEHICLE_PROBS)
-
-# ---------------------------------------------------------------------------
-# 3) Actual_Delay_Days - iki aşamalı (zero-inflated / hurdle) gecikme modeli
-# ---------------------------------------------------------------------------
-# AŞAMA 1 - Gecikecek mi?   P(gecikme) = sigmoid(logit),  Bernoulli çekilişi
-# AŞAMA 2 - Kaç gün?        Yalnızca gecikenler için 1..MAX_DELAY_DAYS arası
-#                           kesilmiş (truncated) Poisson
-#
-# İki aşamayı ayırmak, "çoğu sevkiyat zamanında; gecikenler ise ciddi gecikiyor"
-# yapısını doğal olarak üretir. Tek aşamalı toplamsal model bunu üretemez, çünkü
-# tüm bileşenler pozitif olduğunda 0'a düşmek imkânsızlaşır.
-
+# --- Delay model ------------------------------------------------------------
 MAX_DELAY_DAYS = 5
-TARGET_DELAY_RATE = 0.22          # hedeflenen genel gecikme oranı
+TARGET_DELAY_RATE = 0.22          # target overall delay rate
 
-# --- Aşama 1: gecikme olasılığının logit bileşenleri ------------------------
-weather_logit = {"Normal": 0.00, "Rain": 0.60, "Storm": 2.00, "Snow": 1.40}
-traffic_logit = {"Low": 0.00, "Medium": 0.50, "High": 1.20}
+WEATHER_LOGIT = {"Normal": 0.00, "Rain": 0.60, "Storm": 2.00, "Snow": 1.40}
+TRAFFIC_LOGIT = {"Low": 0.00, "Medium": 0.50, "High": 1.20}
 
-VENDOR_PIVOT = 3.25               # ortalama tedarikçi puanı -> merkezleme noktası
+VENDOR_PIVOT = 3.25               # mean vendor rating -> centring point
 VENDOR_SLOPE = 0.80
 DISTANCE_PIVOT = 625.0
 DISTANCE_SLOPE = 0.50
 
-# Hava x Tedarikçi ETKİLEŞİMİ.
-# Toplamsal bir modelde kötü hava herkesi eşit vurur ve tedarikçi kalitesinin
-# önemi tavan etkisiyle silinir. Gerçekte kötü koşullarda operasyonel yetkinlik
-# DAHA ÇOK fark eder: iyi tedarikçi fırtınayı yönetir, kötüsü yönetemez.
+# Weather x Vendor INTERACTION.
+# In an additive model, bad weather hits everyone equally and the importance of
+# vendor quality is erased by the ceiling effect. In reality, operational
+# competence matters MORE under bad conditions: a good vendor manages the storm,
+# a poor one does not.
 #
-# Tedarikçi terimi VENDOR_PIVOT etrafında MERKEZLENDİĞİ için bu çarpanı
-# büyütmek ortalamayı değil YAYILIMI artırır:
-#   - iyi tedarikçi (puan > 3.25) -> terim negatif -> kötü havada daha da negatif
-#   - kötü tedarikçi (puan < 3.25) -> terim pozitif -> kötü havada daha da pozitif
-# Yani "kötü hava herkesi vurur, ama kaliteli tedarikçiyi daha az vurur" ve
-# merkezleme sayesinde havanın MARJİNAL etkisi büyük ölçüde korunur.
-weather_vendor_amp = {"Normal": 0.00, "Rain": 0.20, "Storm": 0.75, "Snow": 0.50}
+# Because the vendor term is CENTRED on VENDOR_PIVOT, increasing this multiplier
+# widens the SPREAD rather than shifting the mean:
+#   - good vendor (rating > 3.25) -> term negative -> even more negative in bad weather
+#   - poor vendor (rating < 3.25) -> term positive -> even more positive in bad weather
+# So "bad weather hits everyone, but hits a quality vendor less", and thanks to
+# the centring, the MARGINAL effect of weather is largely preserved.
+WEATHER_VENDOR_AMP = {"Normal": 0.00, "Rain": 0.20, "Storm": 0.75, "Snow": 0.50}
 
-vendor_effect = (VENDOR_PIVOT - vendor_ratings) * VENDOR_SLOPE
-amp = np.array([1.0 + weather_vendor_amp[w] for w in weather])
-
-logit_wo_intercept = (
-    np.array([weather_logit[w] for w in weather])
-    + np.array([traffic_logit[t] for t in traffic])
-    + vendor_effect * amp
-    + ((distance_km - DISTANCE_PIVOT) / 1200.0) * DISTANCE_SLOPE
-)
+WEATHER_SEVERITY = {"Normal": 0.00, "Rain": 0.25, "Storm": 1.10, "Snow": 0.75}
+TRAFFIC_SEVERITY = {"Low": 0.00, "Medium": 0.15, "High": 0.45}
+SEVERITY_BASE = 0.30
 
 
-def _solve_intercept(linear, target, lo=-8.0, hi=4.0, iters=90):
-    """E[sigmoid(linear + c)] = target olacak sabiti ikili aramayla bul.
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def solve_intercept(linear, target, lo=-8.0, hi=4.0, iters=90):
+    """Binary-search the constant that makes E[sigmoid(linear + c)] = target.
 
-    Taban gecikme oranını elle bir sihirli sayı olarak yazmak yerine
-    türetiyoruz; böylece diğer katsayılar değiştiğinde oran hedefte kalır.
+    Rather than writing the base delay rate as a hand-picked magic number, we
+    derive it, so the rate stays on target when the other coefficients change.
+    Consumes no randomness.
     """
     for _ in range(iters):
         mid = (lo + hi) / 2.0
@@ -246,174 +171,302 @@ def _solve_intercept(linear, target, lo=-8.0, hi=4.0, iters=90):
     return (lo + hi) / 2.0
 
 
-INTERCEPT = _solve_intercept(logit_wo_intercept, TARGET_DELAY_RATE)
-delay_probability = 1.0 / (1.0 + np.exp(-(logit_wo_intercept + INTERCEPT)))
-is_delayed = rng.random(N_ROWS) < delay_probability
-
-# --- Aşama 2: gecikme şiddeti (yalnızca gecikenler için) -------------------
-weather_severity = {"Normal": 0.00, "Rain": 0.25, "Storm": 1.10, "Snow": 0.75}
-traffic_severity = {"Low": 0.00, "Medium": 0.15, "High": 0.45}
-SEVERITY_BASE = 0.30
-
-lam = (
-    SEVERITY_BASE
-    + np.array([weather_severity[w] for w in weather])
-    + np.array([traffic_severity[t] for t in traffic])
-    + (VENDOR_PIVOT - vendor_ratings) * 0.18
-).clip(0.05, None)
+def _log_factorial(k):
+    return np.cumsum(np.concatenate(([0.0], np.log(np.arange(1, k.max() + 1)))))[k]
 
 
-def _truncated_poisson_days(lam_vec, max_days, generator):
-    """1..max_days aralığında DOĞRU ŞEKİLDE kesilmiş Poisson çekilişi.
+def truncated_poisson_days(lam_vec, max_days, generator):
+    """A PROPERLY truncated Poisson draw over the range 1..max_days.
 
-    Basitçe `np.clip(1 + Poisson(lam), 1, max_days)` yazmak kuyruğu max_days'te
-    yığar ve dağılımı monoton olmaktan çıkarır (örn. 4 günden çok 5 gün üretir).
-    Bunun yerine k = 0..max_days-1 üzerindeki pmf'i normalize edip ters-CDF ile
-    örnekliyoruz. scipy gerektirmez.
+    Simply writing `np.clip(1 + Poisson(lam), 1, max_days)` piles the tail up at
+    max_days and breaks monotonicity (e.g. producing more 5-day than 4-day
+    delays). Instead we normalise the pmf over k = 0..max_days-1 and sample by
+    inverse CDF. Requires no scipy.
+
+    Draws exactly one uniform vector from `generator`.
     """
     k = np.arange(max_days)
-    log_pmf = -lam_vec[:, None] + k[None, :] * np.log(lam_vec[:, None]) - _log_factorial(k)[None, :]
+    log_pmf = (-lam_vec[:, None] + k[None, :] * np.log(lam_vec[:, None])
+               - _log_factorial(k)[None, :])
     pmf = np.exp(log_pmf)
     pmf /= pmf.sum(axis=1, keepdims=True)
     u = generator.random(len(lam_vec))[:, None]
     return 1 + (u > pmf.cumsum(axis=1)).sum(axis=1)
 
 
-def _log_factorial(k):
-    return np.cumsum(np.concatenate(([0.0], np.log(np.arange(1, k.max() + 1)))))[k]
+# ---------------------------------------------------------------------------
+# 2) Generating the base columns
+# ---------------------------------------------------------------------------
+def build_base_columns(rng, n_rows: int = N_ROWS) -> dict:
+    """Vendors, cities, distances, weights, dates, weather, traffic, vehicles.
 
+    ⚠️ The order of the draws below is load-bearing for reproducibility.
+    """
+    # Each vendor is assigned a fixed "quality" rating (between 1.0 and 5.0) so
+    # that the same vendor shows a consistent performance profile.
+    vendor_base_rating = {vid: round(rng.uniform(1.5, 5.0), 1) for vid in VENDOR_IDS}
 
-actual_delay_days = np.where(
-    is_delayed, _truncated_poisson_days(lam, MAX_DELAY_DAYS, rng), 0
-).astype(int)
+    shipment_ids = [f"SHP-{str(i).zfill(5)}" for i in range(1, n_rows + 1)]
+    vendor_ids = rng.choice(VENDOR_IDS, size=n_rows)
+
+    # Small noise around the vendor's base rating gives realistic per-shipment variety.
+    vendor_ratings = np.array([
+        np.clip(vendor_base_rating[vid] + rng.normal(0, 0.15), 1.0, 5.0)
+        for vid in vendor_ids
+    ]).round(1)
+
+    # Origin / Destination: cannot be the same city
+    origins = rng.choice(CITIES, size=n_rows)
+    destinations = np.array([
+        rng.choice([c for c in CITIES if c != o]) for o in origins
+    ])
+
+    distance_km = rng.uniform(50, 1200, size=n_rows).round(1)
+    weight_tons = rng.uniform(1, 25, size=n_rows).round(2)
+
+    # Shipment_Date - spread over the last 12 months with seasonal volume
+    all_days = pd.date_range(DATA_START_DATE, DATA_END_DATE, freq="D")
+    day_weights = np.array([MONTHLY_VOLUME_WEIGHTS[d.month] for d in all_days],
+                           dtype=float)
+    day_weights /= day_weights.sum()
+
+    shipment_dates = pd.DatetimeIndex(
+        rng.choice(all_days, size=n_rows, p=day_weights)
+    ).sort_values()          # chronological order: Shipment_ID follows the timeline
+
+    months = shipment_dates.month.to_numpy()
+
+    # Weather is drawn PER MONTH (this is where seasonality enters).
+    weather = np.empty(n_rows, dtype=object)
+    for m, probs in MONTHLY_WEATHER_PROBS.items():
+        mask = months == m
+        if mask.any():
+            weather[mask] = rng.choice(WEATHER_CONDITIONS, size=int(mask.sum()),
+                                       p=probs)
+    weather = weather.astype(str)
+
+    # Traffic and vehicle type are NOT seasonal - the scope is kept deliberately narrow.
+    traffic = rng.choice(TRAFFIC_LEVELS, size=n_rows, p=TRAFFIC_PROBS)
+    vehicle = rng.choice(VEHICLE_TYPES, size=n_rows, p=VEHICLE_PROBS)
+
+    return {
+        "shipment_ids": shipment_ids,
+        "shipment_dates": shipment_dates,
+        "vendor_ids": vendor_ids,
+        "vendor_ratings": vendor_ratings,
+        "origins": origins,
+        "destinations": destinations,
+        "distance_km": distance_km,
+        "weight_tons": weight_tons,
+        "weather": weather,
+        "traffic": traffic,
+        "vehicle": vehicle,
+    }
+
 
 # ---------------------------------------------------------------------------
-# 4) CO2_Emission_kg - mesafe, tonaj ve araç tipine göre hesaplama
+# 3) Actual_Delay_Days - two-stage (zero-inflated / hurdle) delay model
 # ---------------------------------------------------------------------------
-# Formül:
-#   CO2 = (Distance_km * Weight_tons * Emisyon_Faktörü[Araç]) + Baz_Emisyon[Araç]
-#         + hava/trafik kaynaklı ek yakıt tüketimi (motor rölantide/duraklamada daha fazla yakar)
-#         + küçük rastgele gürültü (gerçekçilik için, +-%5)
+def build_delays(rng, cols: dict) -> tuple:
+    """STAGE 1 - Will it be late?  P(delay) = sigmoid(logit), Bernoulli draw
+    STAGE 2 - By how many days? A Poisson truncated to 1..MAX_DELAY_DAYS,
+              drawn only for the late shipments
 
-base_co2 = distance_km * weight_tons * np.array([EMISSION_FACTOR[v] for v in vehicle])
-fixed_co2 = np.array([BASE_EMISSION[v] for v in vehicle])
+    Separating the two stages naturally produces the "most shipments on time; the
+    late ones are seriously late" structure. A single-stage additive model cannot,
+    because once every component is positive, reaching 0 becomes impossible.
 
-# Kötü hava ve yoğun trafik -> daha fazla rölanti / verimsiz sürüş -> ek emisyon (%)
-weather_co2_mult = {"Normal": 1.00, "Rain": 1.03, "Storm": 1.08, "Snow": 1.06}
-traffic_co2_mult = {"Low": 1.00, "Medium": 1.04, "High": 1.10}
+    Returns (actual_delay_days, intercept).
+    """
+    weather, traffic = cols["weather"], cols["traffic"]
+    vendor_ratings, distance_km = cols["vendor_ratings"], cols["distance_km"]
+    n_rows = len(vendor_ratings)
 
-weather_mult = np.array([weather_co2_mult[w] for w in weather])
-traffic_mult = np.array([traffic_co2_mult[t] for t in traffic])
+    vendor_effect = (VENDOR_PIVOT - vendor_ratings) * VENDOR_SLOPE
+    amp = np.array([1.0 + WEATHER_VENDOR_AMP[w] for w in weather])
 
-co2_before_noise = (base_co2 + fixed_co2) * weather_mult * traffic_mult
+    logit_wo_intercept = (
+        np.array([WEATHER_LOGIT[w] for w in weather])
+        + np.array([TRAFFIC_LOGIT[t] for t in traffic])
+        + vendor_effect * amp
+        + ((distance_km - DISTANCE_PIVOT) / 1200.0) * DISTANCE_SLOPE
+    )
 
-# %5'lik rastgele gürültü ekleyerek gerçekçi varyasyon sağlanır
-co2_noise = rng.normal(1.0, 0.03, size=N_ROWS)
-co2_emission_kg = np.clip(co2_before_noise * co2_noise, 0.5, None).round(2)
+    intercept = solve_intercept(logit_wo_intercept, TARGET_DELAY_RATE)
+    delay_probability = 1.0 / (1.0 + np.exp(-(logit_wo_intercept + intercept)))
+    is_delayed = rng.random(n_rows) < delay_probability
 
-# ---------------------------------------------------------------------------
-# 5) DataFrame oluşturma ve dışa aktarma
-# ---------------------------------------------------------------------------
+    lam = (
+        SEVERITY_BASE
+        + np.array([WEATHER_SEVERITY[w] for w in weather])
+        + np.array([TRAFFIC_SEVERITY[t] for t in traffic])
+        + (VENDOR_PIVOT - vendor_ratings) * 0.18
+    ).clip(0.05, None)
 
-df = pd.DataFrame({
-    "Shipment_ID": shipment_ids,
-    "Shipment_Date": shipment_dates.strftime("%Y-%m-%d"),
-    "Vendor_ID": vendor_ids,
-    "Vendor_Rating": vendor_ratings,
-    "Origin": origins,
-    "Destination": destinations,
-    "Distance_km": distance_km,
-    "Weight_tons": weight_tons,
-    "Weather_Condition": weather,
-    "Traffic_Density": traffic,
-    "Vehicle_Type": vehicle,
-    "Actual_Delay_Days": actual_delay_days,
-    "CO2_Emission_kg": co2_emission_kg,
-})
+    actual_delay_days = np.where(
+        is_delayed, truncated_poisson_days(lam, MAX_DELAY_DAYS, rng), 0
+    ).astype(int)
 
-output_path = RAW_DIR / "smart_logistics_data.csv"
-df.to_csv(output_path, index=False)
+    return actual_delay_days, intercept
 
-# ---------------------------------------------------------------------------
-# 6) Hızlı doğrulama / özet istatistikler (konsola yazdırılır)
-# ---------------------------------------------------------------------------
-print(f"Veri seti oluşturuldu: {output_path}  ({len(df)} satır, {len(df.columns)} sütun)\n")
-
-print("--- Sütun özet istatistikleri ---")
-print(df[["Vendor_Rating", "Distance_km", "Weight_tons",
-          "Actual_Delay_Days", "CO2_Emission_kg"]].describe().round(2))
-
-delayed_mask = df["Actual_Delay_Days"] > 0
-print(f"\n--- Zero-inflated yapı doğrulaması (INTERCEPT = {INTERCEPT:.4f}) ---")
-print(f"Gecikme oranı           : %{delayed_mask.mean() * 100:.1f}   (hedef: %{TARGET_DELAY_RATE * 100:.0f})")
-print(f"Ortalama gecikme (tümü) : {df['Actual_Delay_Days'].mean():.2f} gün")
-print(f"Ortalama (gecikenler)   : {df.loc[delayed_mask, 'Actual_Delay_Days'].mean():.2f} gün")
-print("Gün dağılımı:")
-print(df["Actual_Delay_Days"].value_counts().sort_index().to_string())
-
-print("\n--- Gecikme mantığı doğrulaması: hava durumuna göre ---")
-print(df.groupby("Weather_Condition")["Actual_Delay_Days"]
-      .agg(gecikme_orani=lambda s: round((s > 0).mean() * 100, 1),
-           ortalama_gun=lambda s: round(s.mean(), 2))
-      .sort_values("gecikme_orani", ascending=False))
-
-print("\n--- Gecikme mantığı doğrulaması: trafik yoğunluğuna göre ---")
-print(df.groupby("Traffic_Density")["Actual_Delay_Days"]
-      .agg(gecikme_orani=lambda s: round((s > 0).mean() * 100, 1),
-           ortalama_gun=lambda s: round(s.mean(), 2))
-      .sort_values("gecikme_orani", ascending=False))
-
-# Etkileşim terimi çalışıyor mu? Kötü havada tedarikçi kalitesi ayrımı
-# NORMAL havadakine yakın veya daha belirgin olmalı; toplamsal modelde tavan
-# etkisi yüzünden çok daha zayıf çıkıyordu.
-print("\n--- Hava x Tedarikçi etkileşimi doğrulaması (gecikme oranı %) ---")
-quartile = pd.qcut(df["Vendor_Rating"], 4, labels=["Q1 (düşük)", "Q2", "Q3", "Q4 (yüksek)"])
-pivot = (df.assign(_q=quartile, _d=delayed_mask)
-         .pivot_table(index="Weather_Condition", columns="_q", values="_d",
-                      aggfunc="mean", observed=True) * 100).round(1)
-pivot = pivot.reindex(["Storm", "Snow", "Rain", "Normal"])
-print(pivot.to_string())
-print("NOT: Storm/Snow hücrelerinde satır sayısı düşüktür (~25-55); hücre bazlı "
-      "yüzdeler gürültülüdür, yalnızca genel eğilim yorumlanmalıdır.")
 
 # ---------------------------------------------------------------------------
-# 6b) Mevsimsellik doğrulaması
+# 4) CO2_Emission_kg
 # ---------------------------------------------------------------------------
-_dates = pd.to_datetime(df["Shipment_Date"])
-print(f"\n--- Tarih aralığı: {_dates.min():%Y-%m-%d} .. {_dates.max():%Y-%m-%d} "
-      f"({_dates.nunique()} farklı gün) ---")
+def build_co2(rng, cols: dict) -> np.ndarray:
+    """CO2 = (distance * tonnage * emission_factor + fixed base)
+             * weather multiplier * traffic multiplier
+             * a small random noise term (±5%, for realism)
 
-# KRİTİK KONTROL: aylık dağılımlar farklılaştı ama YILLIK MARJİNAL dağılım
-# eski sabit değere yakın kalmalı. Kalmazsa mevsimsellik, genel gecikme
-# oranını da değiştirmiş olur ve "sadece zaman düzeni ekledik" iddiası bozulur.
-marginal = df["Weather_Condition"].value_counts(normalize=True).reindex(
-    WEATHER_CONDITIONS).round(3)
-print("\n--- Yıllık marjinal hava dağılımı (eski sabit değerle kıyas) ---")
-print(pd.DataFrame({
-    "Yeni (mevsimsel)": marginal,
-    "Eski (sabit)": pd.Series([0.60, 0.20, 0.10, 0.10], index=WEATHER_CONDITIONS),
-}).to_string())
+    The constants come from src/config.py, shared with the Streamlit demo.
+    """
+    vehicle, weather, traffic = cols["vehicle"], cols["weather"], cols["traffic"]
+    distance_km, weight_tons = cols["distance_km"], cols["weight_tons"]
 
-_seasonal = (
-    df.assign(Ay=_dates.dt.month)
-      .pivot_table(index="Ay", columns="Weather_Condition",
-                   values="Shipment_ID", aggfunc="count", observed=True)
-      .reindex(columns=WEATHER_CONDITIONS).fillna(0)
-)
-_seasonal_pct = (_seasonal.div(_seasonal.sum(axis=1), axis=0) * 100).round(1)
-_seasonal_pct["Sevkiyat"] = _seasonal.sum(axis=1).astype(int)
-_seasonal_pct["Gecikme_%"] = (
-    df.assign(Ay=_dates.dt.month).groupby("Ay")["Actual_Delay_Days"]
-      .apply(lambda s: round((s > 0).mean() * 100, 1))
-)
-print("\n--- Aylık hava dağılımı (%) ve gerçekleşen gecikme oranı ---")
-print(_seasonal_pct.to_string())
-print("Kış aylarında Snow/Storm payı ve gecikme oranı birlikte yükselmeli;")
-print("yaz aylarında ikisi de düşmeli. Bu, mevsimsel sinyalin kanıtıdır.")
+    base_co2 = distance_km * weight_tons * np.array([EMISSION_FACTOR[v] for v in vehicle])
+    fixed_co2 = np.array([BASE_EMISSION[v] for v in vehicle])
 
-print("\n--- CO2 doğrulaması: Ortalama emisyon, araç tipine göre (kg) ---")
-print(df.groupby("Vehicle_Type")["CO2_Emission_kg"].mean().round(2)
-      .sort_values(ascending=False))
+    weather_mult = np.array([WEATHER_CO2_MULT[w] for w in weather])
+    traffic_mult = np.array([TRAFFIC_CO2_MULT[t] for t in traffic])
 
-print("\n--- İlk 5 satır ---")
-print(df.head())
+    co2_before_noise = (base_co2 + fixed_co2) * weather_mult * traffic_mult
+
+    co2_noise = rng.normal(1.0, 0.03, size=len(distance_km))
+    return np.clip(co2_before_noise * co2_noise, MIN_CO2_KG, None).round(2)
+
+
+# ---------------------------------------------------------------------------
+# 5) Assembly
+# ---------------------------------------------------------------------------
+def assemble_dataframe(cols: dict, actual_delay_days, co2_emission_kg) -> pd.DataFrame:
+    return pd.DataFrame({
+        "Shipment_ID": cols["shipment_ids"],
+        "Shipment_Date": cols["shipment_dates"].strftime("%Y-%m-%d"),
+        "Vendor_ID": cols["vendor_ids"],
+        "Vendor_Rating": cols["vendor_ratings"],
+        "Origin": cols["origins"],
+        "Destination": cols["destinations"],
+        "Distance_km": cols["distance_km"],
+        "Weight_tons": cols["weight_tons"],
+        "Weather_Condition": cols["weather"],
+        "Traffic_Density": cols["traffic"],
+        "Vehicle_Type": cols["vehicle"],
+        "Actual_Delay_Days": actual_delay_days,
+        "CO2_Emission_kg": co2_emission_kg,
+    })
+
+
+def generate_dataset(seed: int = RNG_SEED, n_rows: int = N_ROWS) -> tuple:
+    """Build the whole dataset from one seeded generator.
+
+    Returns (dataframe, intercept). Exposed separately from main() so tests can
+    generate data without touching the filesystem.
+    """
+    rng = np.random.default_rng(seed)
+    cols = build_base_columns(rng, n_rows)
+    actual_delay_days, intercept = build_delays(rng, cols)
+    co2_emission_kg = build_co2(rng, cols)
+    return assemble_dataframe(cols, actual_delay_days, co2_emission_kg), intercept
+
+
+# ---------------------------------------------------------------------------
+# 6) Validation / summary statistics (printed to the console)
+# ---------------------------------------------------------------------------
+def print_summary(df: pd.DataFrame, output_path: Path, intercept: float) -> None:
+    print(f"Dataset created: {output_path}  "
+          f"({len(df)} rows, {len(df.columns)} columns)\n")
+
+    print("--- Column summary statistics ---")
+    print(df[["Vendor_Rating", "Distance_km", "Weight_tons",
+              "Actual_Delay_Days", "CO2_Emission_kg"]].describe().round(2))
+
+    delayed_mask = df["Actual_Delay_Days"] > 0
+    print(f"\n--- Zero-inflated structure check (INTERCEPT = {intercept:.4f}) ---")
+    print(f"Delay rate              : {delayed_mask.mean() * 100:.1f}%   "
+          f"(target: {TARGET_DELAY_RATE * 100:.0f}%)")
+    print(f"Mean delay (all rows)   : {df['Actual_Delay_Days'].mean():.2f} days")
+    print(f"Mean delay (late only)  : "
+          f"{df.loc[delayed_mask, 'Actual_Delay_Days'].mean():.2f} days")
+    print("Distribution of days:")
+    print(df["Actual_Delay_Days"].value_counts().sort_index().to_string())
+
+    print("\n--- Delay logic check: by weather condition ---")
+    print(df.groupby("Weather_Condition")["Actual_Delay_Days"]
+          .agg(delay_rate_pct=lambda s: round((s > 0).mean() * 100, 1),
+               mean_days=lambda s: round(s.mean(), 2))
+          .sort_values("delay_rate_pct", ascending=False))
+
+    print("\n--- Delay logic check: by traffic density ---")
+    print(df.groupby("Traffic_Density")["Actual_Delay_Days"]
+          .agg(delay_rate_pct=lambda s: round((s > 0).mean() * 100, 1),
+               mean_days=lambda s: round(s.mean(), 2))
+          .sort_values("delay_rate_pct", ascending=False))
+
+    # Is the interaction term working? Under bad weather the separation by vendor
+    # quality should be as clear as under NORMAL weather, or clearer; in the
+    # additive model it came out far weaker because of the ceiling effect.
+    print("\n--- Weather x Vendor interaction check (delay rate %) ---")
+    quartile = pd.qcut(df["Vendor_Rating"], 4,
+                       labels=["Q1 (low)", "Q2", "Q3", "Q4 (high)"])
+    pivot = (df.assign(_q=quartile, _d=delayed_mask)
+             .pivot_table(index="Weather_Condition", columns="_q", values="_d",
+                          aggfunc="mean", observed=True) * 100).round(1)
+    pivot = pivot.reindex(["Storm", "Snow", "Rain", "Normal"])
+    print(pivot.to_string())
+    print("NOTE: the Storm/Snow cells hold few rows (~25-55), so cell-level "
+          "percentages are noisy; only the overall trend should be interpreted.")
+
+    # --- Seasonality check ---
+    dates = pd.to_datetime(df["Shipment_Date"])
+    print(f"\n--- Date range: {dates.min():%Y-%m-%d} .. {dates.max():%Y-%m-%d} "
+          f"({dates.nunique()} distinct days) ---")
+
+    # CRITICAL CHECK: the monthly distributions now differ, but the ANNUAL
+    # MARGINAL distribution must stay close to the old fixed values. If it does
+    # not, then seasonality has also shifted the overall delay rate, and the claim
+    # that "we only added a temporal order" no longer holds.
+    marginal = df["Weather_Condition"].value_counts(normalize=True).reindex(
+        WEATHER_CONDITIONS).round(3)
+    print("\n--- Annual marginal weather distribution (vs the old fixed values) ---")
+    print(pd.DataFrame({
+        "New (seasonal)": marginal,
+        "Old (fixed)": pd.Series([0.60, 0.20, 0.10, 0.10], index=WEATHER_CONDITIONS),
+    }).to_string())
+
+    seasonal = (
+        df.assign(Month=dates.dt.month)
+          .pivot_table(index="Month", columns="Weather_Condition",
+                       values="Shipment_ID", aggfunc="count", observed=True)
+          .reindex(columns=WEATHER_CONDITIONS).fillna(0)
+    )
+    seasonal_pct = (seasonal.div(seasonal.sum(axis=1), axis=0) * 100).round(1)
+    seasonal_pct["Shipments"] = seasonal.sum(axis=1).astype(int)
+    seasonal_pct["Delay_%"] = (
+        df.assign(Month=dates.dt.month).groupby("Month")["Actual_Delay_Days"]
+          .apply(lambda s: round((s > 0).mean() * 100, 1))
+    )
+    print("\n--- Monthly weather distribution (%) and realised delay rate ---")
+    print(seasonal_pct.to_string())
+    print("In winter months the Snow/Storm share and the delay rate should rise "
+          "together;")
+    print("in summer months both should fall. That is the evidence of a seasonal "
+          "signal.")
+
+    print("\n--- CO2 check: mean emissions by vehicle type (kg) ---")
+    print(df.groupby("Vehicle_Type")["CO2_Emission_kg"].mean().round(2)
+          .sort_values(ascending=False))
+
+    print("\n--- First 5 rows ---")
+    print(df.head())
+
+
+def main() -> None:
+    df, intercept = generate_dataset()
+    RAW_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = RAW_DIR / "smart_logistics_data.csv"
+    df.to_csv(output_path, index=False)
+    print_summary(df, output_path, intercept)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,69 +1,59 @@
 """
-Streamlit demo: Sevkiyat Gecikme Riski & Karbon Maliyeti
+Streamlit demo: Shipment Delay Risk & Carbon Cost
 =========================================================
-Çalıştırma:   streamlit run src/app.py
+Run with:   streamlit run src/app.py
 
-Bu uygulama HİÇBİR ML mantığını yeniden kurmaz. `models/production_risk_model.pkl`
-içindeki tam pipeline'ı (ColumnTransformer + OneHotEncoder + CalibratedClassifierCV)
-olduğu gibi yükler ve ham bir DataFrame verir. Encoding'i burada elle yapmak
-train/serve skew'in klasik kaynağıdır; sütun sırası veya kategori işleme ufak bir
-şekilde farklılaşır ve model sessizce yanlış tahmin üretir.
+This app re-implements NO machine learning logic. It loads the complete pipeline
+stored in `models/production_risk_model.pkl` (ColumnTransformer + OneHotEncoder +
+CalibratedClassifierCV) exactly as it was saved and hands it a raw DataFrame. Doing
+the encoding by hand here is the classic source of train/serve skew: the column order
+or the unknown-category handling drifts slightly and the model silently starts
+predicting the wrong thing.
 
-Eşikler, feature sırası ve metrikler de HARDCODE EDİLMEZ - aynı dosyadaki
-metadata'dan okunur. Böylece model yeniden eğitilip eşikler değişse bile uygulama
-otomatik uyumlu kalır.
+Thresholds, feature order and metrics are NOT hardcoded either — they are read from
+the metadata bundled in the same file. That way, if the model is retrained with
+different thresholds, this app stays consistent automatically.
 """
 
+import sys
 from pathlib import Path
 
 import joblib
 import pandas as pd
 import streamlit as st
 
-# ---------------------------------------------------------------------------
-# CO2 hesabı - generate_logistics_data.py'den BİREBİR kopyalanmış sabitler
-# ---------------------------------------------------------------------------
-# ÖNEMLİ: CO2 bir MODEL TAHMİNİ DEĞİLDİR. Mesafe, tonaj ve araç tipinden
-# deterministik olarak hesaplanan mühendislik değeridir. Jeneratördeki formülün
-# aynısı kullanılır; tek fark, oradaki %3'lük rastgele gürültü burada YOKTUR
-# (aynı girdi her zaman aynı sonucu vermelidir).
-EMISSION_FACTOR = {"Diesel Truck": 0.13, "Electric Semi": 0.035, "Hybrid Van": 0.08}
-BASE_EMISSION = {"Diesel Truck": 8.0, "Electric Semi": 1.5, "Hybrid Van": 4.0}
-WEATHER_CO2_MULT = {"Normal": 1.00, "Rain": 1.03, "Storm": 1.08, "Snow": 1.06}
-TRAFFIC_CO2_MULT = {"Low": 1.00, "Medium": 1.04, "High": 1.10}
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# Power BI'daki `Carbon Tax Impact ($)` ölçüsüyle aynı varsayım.
-CARBON_PRICE_PER_TON = 50.0
+# ---------------------------------------------------------------------------
+# CO2 calculation - imported, never re-declared
+# ---------------------------------------------------------------------------
+# IMPORTANT: CO2 is NOT a model prediction. It is an engineering figure computed
+# deterministically from distance, tonnage and vehicle type by `config.compute_co2_kg`
+# — the same module the data generator draws its constants from, so the two can never
+# drift apart. The only difference is that the generator adds ±3% random noise on top
+# for realism, while this app does not: the same input must always produce the same
+# output.
+from config import (  # noqa: E402
+    CARBON_PRICE_PER_TON, classify_risk, compare_data_fingerprint,
+    compute_co2_kg, compute_data_fingerprint,
+)
 
-# Örneklem azlığı nedeniyle model bu ikisini güvenilir ayıramıyor (bkz. README).
+# The model cannot reliably separate these two because of small sample sizes
+# (see README / docs/METHODOLOGY.md).
 LOW_SAMPLE_WEATHER = {"Storm", "Snow"}
 
 
-def compute_co2_kg(distance_km: float, weight_tons: float, vehicle: str,
-                   weather: str, traffic: str) -> float:
-    """CO2 = (mesafe x tonaj x emisyon_faktörü + sabit taban) x hava x trafik."""
-    base = distance_km * weight_tons * EMISSION_FACTOR[vehicle] + BASE_EMISSION[vehicle]
-    return max(base * WEATHER_CO2_MULT[weather] * TRAFFIC_CO2_MULT[traffic], 0.5)
-
-
-def classify_risk(p: float, thresholds: dict) -> str:
-    if p >= thresholds["high_risk"]:
-        return "High Risk"
-    if p >= thresholds["medium_risk"]:
-        return "Medium Risk"
-    return "Low Risk"
-
-
 def find_model_path() -> Path:
-    """Modeli hem düz hem src/ yerleşiminde bul (Streamlit Cloud'da cwd repo kökü)."""
+    """Locate the model in both flat and src/ layouts (on Streamlit Cloud the
+    working directory is the repository root)."""
     here = Path(__file__).resolve()
     for base in (here.parent.parent, here.parent, Path.cwd()):
         candidate = base / "models" / "production_risk_model.pkl"
         if candidate.exists():
             return candidate
     raise FileNotFoundError(
-        "models/production_risk_model.pkl bulunamadı. "
-        "Önce `python ml_delay_risk_pipeline.py` çalıştırın."
+        "models/production_risk_model.pkl not found. "
+        "Run `python src/ml_delay_risk_pipeline.py` first."
     )
 
 
@@ -73,199 +63,253 @@ def load_bundle():
     return bundle["model"], bundle["metadata"]
 
 
-# ---------------------------------------------------------------------------
-st.set_page_config(page_title="Sevkiyat Gecikme Riski", page_icon="🚚",
-                   layout="wide")
+def find_processed_dir() -> Path | None:
+    """Locate data/processed/ the same way find_model_path() locates the model."""
+    here = Path(__file__).resolve()
+    for base in (here.parent.parent, here.parent, Path.cwd()):
+        candidate = base / "data" / "processed"
+        if candidate.is_dir():
+            return candidate
+    return None
 
-try:
-    model, meta = load_bundle()
-except FileNotFoundError as exc:
-    st.error(str(exc))
-    st.stop()
 
-thresholds = meta["thresholds"]
-levels = meta["categorical_levels"]
+def data_sync_mismatches(meta: dict) -> list:
+    """Has the data been regenerated since this model was trained?
 
-st.title("🚚 Sevkiyat Gecikme Riski & Karbon Maliyeti")
-st.caption(
-    f"Kalibre Random Forest · OOF ROC-AUC {meta['metrics']['oof_roc_auc']:.3f} · "
-    f"kronolojik holdout {meta['metrics']['chronological_holdout_roc_auc']:.3f} · "
-    f"model eğitim tarihi {meta['trained_at'][:10]}"
-)
+    Returns a list of mismatch descriptions (empty when in sync, or when the check
+    cannot be performed). Silence on success is deliberate: a banner that appears
+    every single run is one users learn to ignore.
+    """
+    processed_dir = find_processed_dir()
+    if processed_dir is None:
+        return []
+    recorded = {
+        "scored_table": meta.get("training_data_sha256"),
+        "source_tables": meta.get("source_tables_sha256"),
+    }
+    return compare_data_fingerprint(recorded, compute_data_fingerprint(processed_dir))
 
-# ---------------------------------------------------------------------------
-# Sidebar - girdiler
-# ---------------------------------------------------------------------------
-st.sidebar.header("Sevkiyat Bilgileri")
-
-vendor_rating = st.sidebar.slider("Tedarikçi Puanı (Vendor Rating)", 2.5, 5.0, 4.0, 0.1)
-traffic = st.sidebar.selectbox("Trafik Yoğunluğu (Traffic Density)",
-                               ["Low", "Medium", "High"], index=1)
-weather = st.sidebar.selectbox("Hava Durumu (Weather Condition)",
-                               ["Normal", "Rain", "Snow", "Storm"], index=0)
-vehicle = st.sidebar.selectbox("Araç Tipi (Vehicle Type)",
-                               ["Diesel Truck", "Electric Semi", "Hybrid Van"], index=0)
-distance_km = st.sidebar.slider("Mesafe (km)", 50, 1200, 450, 10)
-weight_tons = st.sidebar.slider("Ağırlık (ton)", 1.0, 24.0, 12.0, 0.5)
-
-# Metadata ile arayüz seçenekleri tutarlı mı? Model yeniden eğitilip kategoriler
-# değişirse sessizce yanlış tahmin üretmek yerine burada uyaralım.
-for col, chosen in [("Weather_Condition", weather), ("Traffic_Density", traffic),
-                    ("Vehicle_Type", vehicle)]:
-    if chosen not in levels.get(col, [chosen]):
-        st.sidebar.warning(
-            f"'{chosen}' modelin eğitim verisinde yok ({col}). "
-            "Tahmin bu kategoriyi yok sayarak üretilir."
-        )
-
-st.sidebar.divider()
-st.sidebar.caption(
-    "Bu bir **demo**dur: model sentetik veriyle eğitilmiştir ve gerçek dünya "
-    "performansını temsil etmez. Ayrıntı için ana ekrandaki "
-    "*Bu demo hakkında* bölümüne bakın."
-)
 
 # ---------------------------------------------------------------------------
-# Ana ekran
+# Everything below lives inside main(). Streamlit executes the script with
+# __name__ == "__main__", so the app still starts normally with
+# `streamlit run src/app.py` — but importing this module (as the test suite does)
+# runs nothing, loads no 8.7 MB model, and opens no page.
 # ---------------------------------------------------------------------------
-if st.button("🚀 Riski ve Maliyeti Hesapla", type="primary"):
-    # Sütun sırası metadata'dan geliyor - hardcode değil.
-    features = pd.DataFrame([{
-        "Vendor_Rating": vendor_rating,
-        "Traffic_Density": traffic,
-        "Weather_Condition": weather,
-        "Vehicle_Type": vehicle,
-        "Distance_km": float(distance_km),
-        "Weight_tons": float(weight_tons),
-    }])[meta["feature_order"]]
+def main() -> None:
+    st.set_page_config(page_title="Logistics Delay-Risk Prediction", page_icon="🚚",
+                       layout="wide")
 
-    probability = float(model.predict_proba(features)[0, 1])
-    risk_level = classify_risk(probability, thresholds)
+    try:
+        model, meta = load_bundle()
+    except FileNotFoundError as exc:
+        st.error(str(exc))
+        st.stop()
 
-    co2_kg = compute_co2_kg(float(distance_km), float(weight_tons),
-                            vehicle, weather, traffic)
-    co2_tons = co2_kg / 1000.0
-    carbon_tax = co2_tons * CARBON_PRICE_PER_TON
+    thresholds = meta["thresholds"]
+    levels = meta["categorical_levels"]
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Gecikme Olasılığı", f"%{probability * 100:.1f}",
-              help="Modelin kalibre edilmiş tahmini (ML çıktısı).")
-    c2.metric("Risk Seviyesi", risk_level,
-              help=f"Eşikler: High ≥ {thresholds['high_risk']}, "
-                   f"Medium ≥ {thresholds['medium_risk']}")
-    c3.metric("CO₂ (ton) · hesaplanan", f"{co2_tons:.3f}",
-              help="Model tahmini DEĞİL - mesafe, tonaj ve araç tipinden "
-                   "deterministik formülle hesaplanır.")
-    c4.metric("Karbon Vergisi ($) · hesaplanan", f"${carbon_tax:,.2f}",
-              help=f"CO₂ tonajı × ${CARBON_PRICE_PER_TON:.0f}/ton varsayımı.")
+    st.title("🚚 Logistics Delay-Risk Prediction & Carbon Cost")
+    st.caption(
+        f"Calibrated Random Forest · out-of-fold ROC-AUC {meta['metrics']['oof_roc_auc']:.3f} · "
+        f"chronological holdout {meta['metrics']['chronological_holdout_roc_auc']:.3f} · "
+        f"model trained {meta['trained_at'][:10]}"
+    )
 
-    if risk_level == "High Risk":
-        st.error(
-            f"**Yüksek Risk — %{probability * 100:.1f}**\n\n"
-            "Yanlış alarm ile kaçırılan gecikme *aynı* maliyette olsa bile "
-            "müdahale etmeye değer. Tedarikçiyle temasa geçin, tampon kapasite "
-            "ayırın veya rota/araç değişimi değerlendirin."
-        )
-    elif risk_level == "Medium Risk":
+    # Stale-model guard. Silent when everything lines up.
+    mismatches = data_sync_mismatches(meta)
+    if mismatches:
         st.warning(
-            f"**Orta Risk — %{probability * 100:.1f}**\n\n"
-            f"Kaçırılan gecikmenin yanlış alarmdan "
-            f"{thresholds['cost_fn_over_fp']:.0f}× pahalı olduğu varsayımı altında "
-            "müdahale etmeye değer. İzlemeye alın."
+            "⚠️ **This model may have been trained on different data than the "
+            "files currently on disk.** The predictions below may not reflect the "
+            "current dataset.\n\n"
+            "Changed since the model was trained: "
+            + ", ".join(mismatches)
+            + f".\n\nThe model was trained on {meta['trained_at'][:10]}. "
+            "Re-run `python src/ml_delay_risk_pipeline.py` to retrain against the "
+            "current data."
         )
+
+    # ---------------------------------------------------------------------------
+    # Sidebar - inputs
+    # ---------------------------------------------------------------------------
+    st.sidebar.header("Shipment Details")
+
+    vendor_rating = st.sidebar.slider("Vendor Rating", 2.5, 5.0, 4.0, 0.1)
+    traffic = st.sidebar.selectbox("Traffic Density", ["Low", "Medium", "High"], index=1)
+    weather = st.sidebar.selectbox("Weather Condition",
+                                   ["Normal", "Rain", "Snow", "Storm"], index=0)
+    vehicle = st.sidebar.selectbox("Vehicle Type",
+                                   ["Diesel Truck", "Electric Semi", "Hybrid Van"], index=0)
+    distance_km = st.sidebar.slider("Distance (km)", 50, 1200, 450, 10)
+    weight_tons = st.sidebar.slider("Weight (tons)", 1.0, 24.0, 12.0, 0.5)
+
+    # Are the UI options still consistent with the model's metadata? If the model is
+    # retrained and its categories change, warn here instead of silently mispredicting.
+    for col, chosen in [("Weather_Condition", weather), ("Traffic_Density", traffic),
+                        ("Vehicle_Type", vehicle)]:
+        if chosen not in levels.get(col, [chosen]):
+            st.sidebar.warning(
+                f"'{chosen}' does not appear in the model's training data ({col}). "
+                "The prediction will be made with this category ignored."
+            )
+
+    st.sidebar.divider()
+    st.sidebar.caption(
+        "This is a **demo**: the model was trained on synthetic data and does not "
+        "represent real-world performance. See *About this demo* on the main screen "
+        "for details."
+    )
+
+    # ---------------------------------------------------------------------------
+    # Main screen
+    # ---------------------------------------------------------------------------
+    if st.button("🚀 Calculate Risk & Cost", type="primary"):
+        # Column order comes from the metadata - it is not hardcoded.
+        features = pd.DataFrame([{
+            "Vendor_Rating": vendor_rating,
+            "Traffic_Density": traffic,
+            "Weather_Condition": weather,
+            "Vehicle_Type": vehicle,
+            "Distance_km": float(distance_km),
+            "Weight_tons": float(weight_tons),
+        }])[meta["feature_order"]]
+
+        probability = float(model.predict_proba(features)[0, 1])
+        # Thresholds come from the model's metadata, so the app follows the model.
+        risk_level = classify_risk(probability,
+                                   thresholds["high_risk"], thresholds["medium_risk"])
+
+        co2_kg = compute_co2_kg(float(distance_km), float(weight_tons),
+                                vehicle, weather, traffic)
+        co2_tons = co2_kg / 1000.0
+        carbon_tax = co2_tons * CARBON_PRICE_PER_TON
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Delay Probability", f"{probability * 100:.1f}%",
+                  help="The model's calibrated prediction (machine learning output).")
+        c2.metric("Risk Level", risk_level,
+                  help=f"Thresholds: High ≥ {thresholds['high_risk']}, "
+                       f"Medium ≥ {thresholds['medium_risk']}")
+        c3.metric("CO₂ (tons) · calculated", f"{co2_tons:.3f}",
+                  help="NOT a model prediction - derived deterministically from "
+                       "distance, tonnage and vehicle type.")
+        c4.metric("Carbon Tax ($) · calculated", f"${carbon_tax:,.2f}",
+                  help=f"CO₂ tonnage × ${CARBON_PRICE_PER_TON:.0f}/ton assumption.")
+
+        if risk_level == "High Risk":
+            st.error(
+                f"**High Risk — {probability * 100:.1f}%**\n\n"
+                "Worth intervening even if a false alarm cost the *same* as a missed "
+                "delay. Contact the vendor, reserve buffer capacity, or consider a "
+                "route/vehicle change."
+            )
+        elif risk_level == "Medium Risk":
+            st.warning(
+                f"**Medium Risk — {probability * 100:.1f}%**\n\n"
+                f"Worth intervening under the assumption that a missed delay costs "
+                f"{thresholds['cost_fn_over_fp']:.0f}× more than a false alarm. Keep it "
+                "under watch."
+            )
+        else:
+            st.success(
+                f"**Low Risk — {probability * 100:.1f}%**\n\n"
+                f"Not worth intervening even at the "
+                f"{thresholds['cost_fn_over_fp']:.0f}:1 cost assumption. Can proceed on "
+                "the standard flow."
+            )
+
+        # A user may flip between Storm and Snow and see risk move the "wrong" way.
+        # Rather than hide that, explain it right here.
+        if weather in LOW_SAMPLE_WEATHER:
+            st.info(
+                f"ℹ️ **Limited sample for {weather}.** The training data contains 128 Storm "
+                "and 193 Snow shipments. The *ordering* between these two conditions is "
+                "not reliable — switching from Snow to Storm may show risk going slightly "
+                "**down**. This is a data limitation, not a model bug: the model learns "
+                "the rates observed in the data, and these cells hold too few "
+                "observations. That both conditions are riskier *than Normal or Rain* is "
+                "reliable."
+            )
+
+        st.divider()
+        st.markdown("**Input summary**")
+        st.dataframe(
+            features.T.rename(columns={0: "Value"}),
+            use_container_width=False,
+        )
+
     else:
-        st.success(
-            f"**Düşük Risk — %{probability * 100:.1f}**\n\n"
-            f"{thresholds['cost_fn_over_fp']:.0f}:1 maliyet varsayımı altında bile "
-            "müdahale etmeye değmez. Standart akışta ilerleyebilir."
-        )
-
-    # Kullanıcı Storm <-> Snow çevirip riskin ters yönde hareket ettiğini
-    # görebilir. Bunu gizlemek yerine tam burada açıklıyoruz.
-    if weather in LOW_SAMPLE_WEATHER:
         st.info(
-            f"ℹ️ **{weather} için örneklem sınırlı.** Eğitim verisinde Storm 128, "
-            "Snow 193 sevkiyat içeriyor. Bu iki koşul arasındaki *sıralama* "
-            "güvenilir değildir — Snow'dan Storm'a geçtiğinizde riskin bir miktar "
-            "**düştüğünü** görebilirsiniz. Bu bir veri kısıtıdır, model hatası "
-            "değil: model, veride gözlemlenen oranları öğrenir ve bu hücrelerde "
-            "yeterli gözlem yoktur. Her iki koşulun *Normal/Rain'e göre* daha "
-            "riskli olduğu ise güvenilirdir."
+            "👈 Enter the shipment details in the sidebar, then press "
+            "**🚀 Calculate Risk & Cost**."
         )
 
-    st.divider()
-    st.markdown("**Girdi özeti**")
-    st.dataframe(
-        features.T.rename(columns={0: "Değer"}),
-        use_container_width=False,
-    )
+    # ---------------------------------------------------------------------------
+    # Transparency
+    # ---------------------------------------------------------------------------
+    with st.expander("ℹ️ About this demo — limits and assumptions", expanded=False):
+        st.markdown(
+            f"""
+**The data is synthetic.** {meta['training_data']['n_rows']} shipments from a
+rule-based simulation ({meta['training_data']['date_min']} –
+{meta['training_data']['date_max']}). What is on display is the **methodology**, not
+real-world performance.
 
-else:
-    st.info(
-        "👈 Soldaki panelden sevkiyat bilgilerini girin, ardından "
-        "**🚀 Riski ve Maliyeti Hesapla** butonuna basın."
-    )
+**The probabilities are calibrated — but weak in the tail.** A raw Random Forest
+output is the fraction of trees voting positive, not a probability.
+`CalibratedClassifierCV` (isotonic) cut the calibration error (ECE) from 0.137 to
+{meta['metrics']['oof_ece']:.3f}, so "30%" really does mean *about 30%*. Above
+p > 0.8 there are few observations and reliability drops — treat very high
+probabilities with more caution than mid-range ones.
 
-# ---------------------------------------------------------------------------
-# Şeffaflık
-# ---------------------------------------------------------------------------
-with st.expander("ℹ️ Bu demo hakkında — sınırlar ve varsayımlar", expanded=False):
-    st.markdown(
-        f"""
-**Veri sentetiktir.** Model, kural tabanlı bir simülasyonla üretilmiş
-{meta['training_data']['n_rows']} sevkiyatla eğitilmiştir
-({meta['training_data']['date_min']} – {meta['training_data']['date_max']}).
-Buradaki hiçbir sayı gerçek dünya performansını temsil etmez; gösterilen şey
-**metodolojidir**, ticari bir sonuç değildir.
+**The thresholds come from a cost assumption, not percentiles.** A missed delay (SLA
+breach, penalty, expedited shipping) is assumed
+**{thresholds['cost_fn_over_fp']:.0f}× more expensive** than a false alarm (a
+planner's phone call), which makes the optimal intervention threshold analytic:
+`p* = 1 / (1 + {thresholds['cost_fn_over_fp']:.0f}) = {thresholds['medium_risk']}`.
+`High Risk` ({thresholds['high_risk']}) is the 1:1 threshold — worth acting on even
+if both errors cost the same. **The ratio has not been validated against real SLA
+penalty schedules.**
 
-**Olasılıklar kalibre edilmiştir — ama uçlarda zayıftır.** Ham Random Forest
-çıktısı ağaç oylarının oranıdır, olasılık değildir. `CalibratedClassifierCV`
-(isotonic) ile düzeltildi: kalibrasyon hatası (ECE) 0.137 → {meta['metrics']['oof_ece']:.3f}.
-Yani "%30" gerçekten *yaklaşık %30* anlamına gelir. Ancak p > 0.8 bandında gözlem
-azlığı nedeniyle güvenilirlik düşer — çok yüksek olasılıklara orta banttaki kadar
-güvenmeyin.
+**Storm and Snow cannot be separated reliably.** Training data holds 128 Storm
+shipments against 193 Snow. Across a 216-combination sweep the true generating process
+makes Storm riskier than Snow 100% of the time; the model captures that ordering only
+61% of the time. A **data limitation, not a model bug** — the model learns the rates
+present in the data, and these cells hold too few observations.
 
-**Eşikler bir maliyet varsayımından türetilmiştir**, kantilden değil.
-Kaçırılan bir gecikme (SLA ihlali, ceza, ekspres taşıma) yanlış alarmdan
-(bir planlamacı telefonu) **{thresholds['cost_fn_over_fp']:.0f}× pahalı** kabul
-edilmiştir. Kalibre olasılıkla optimum müdahale eşiği
-`p* = 1 / (1 + {thresholds['cost_fn_over_fp']:.0f}) = {thresholds['medium_risk']}` olur.
-`High Risk` eşiği ({thresholds['high_risk']}) ise 1:1 oranın karşılığıdır: maliyetler
-eşit olsa bile müdahale edilecek sevkiyatlar. **Bu oran gerçek SLA ceza tarifeleriyle
-doğrulanmamıştır.**
+**CO₂ and carbon tax are NOT model outputs.** Distance × tonnage × vehicle emission
+factor + fixed base, times weather/traffic multipliers, priced at
+${CARBON_PRICE_PER_TON:.0f}/ton — the same deterministic formula the data generator
+uses, imported from the same module. No prediction, only unit conversion and pricing.
 
-**Storm ve Snow güvenilir ayrılamıyor.** Eğitim verisinde Storm yalnızca 128
-sevkiyat içerir (Snow 193). 216 kombinasyonluk bir taramada gerçek üretim süreci
-Storm'u Snow'dan riskli yapıyor (%100), model ise bunu ancak %61 oranında
-yakalıyor. Bu bir **veri kısıtıdır, model hatası değil** — model veride gözlemlenen
-oranları öğrenir ve bu hücrelerde yeterli gözlem yoktur.
+**This demo scores slightly "sharper" than the Power BI report.** The report's CSV is
+scored *walk-forward* (each shipment by a model trained only on earlier shipments);
+this model is trained on all the data, which is correct for deployment. Hence
+`High Risk` is 10.3% in the report versus 17.7% here. Both are right — the report
+*reports the past*, the demo *scores a new shipment*.
 
-**CO₂ ve karbon vergisi model çıktısı DEĞİLDİR.** Mesafe × tonaj × araç emisyon
-faktörü + sabit taban, üzerine hava/trafik çarpanı — `generate_logistics_data.py`
-içindeki deterministik formülün aynısı. Karbon vergisi ${CARBON_PRICE_PER_TON:.0f}/ton
-varsayımıyla çarpımdır. Burada bir tahmin yoktur, birim dönüşümü ve fiyatlandırma vardır.
+**Model performance (all out-of-sample):**
 
-**Bu demo, Power BI panelinden biraz daha "keskin" skorlar üretir.** Panelin
-beslendiği CSV'deki skorlar *zaman-ileri* üretilir: her sevkiyat, yalnızca kendisinden
-önce gerçekleşmiş sevkiyatlarla eğitilmiş bir modelden skor alır. Buradaki model ise
-tüm veriyle eğitilmiştir (üretime dağıtılacak model için doğrusu budur). Sonuç olarak
-aynı sevkiyat panelde biraz daha düşük, burada biraz daha yüksek olasılık alabilir —
-`High Risk` payı panelde %10.3, bu modelde %17.7. İkisi de doğrudur, farklı soruları
-yanıtlarlar: panel *geçmişi dürüstçe raporlar*, demo *yeni bir sevkiyatı skorlar*.
-
-**Model performansı (hepsi örneklem-dışı):**
-
-| Metrik | Değer |
+| Metric | Value |
 |---|---|
 | ROC-AUC (out-of-fold) | {meta['metrics']['oof_roc_auc']:.3f} |
-| ROC-AUC (kronolojik holdout) | {meta['metrics']['chronological_holdout_roc_auc']:.3f} |
-| ROC-AUC (kronolojik CV) | {meta['metrics']['chronological_cv_roc_auc_mean']:.3f} ± {meta['metrics']['chronological_cv_roc_auc_std']:.3f} |
+| ROC-AUC (chronological holdout) | {meta['metrics']['chronological_holdout_roc_auc']:.3f} |
+| ROC-AUC (chronological CV) | {meta['metrics']['chronological_cv_roc_auc_mean']:.3f} ± {meta['metrics']['chronological_cv_roc_auc_std']:.3f} |
 | Brier score | {meta['metrics']['oof_brier']:.4f} |
-| Kalibrasyon hatası (ECE) | {meta['metrics']['oof_ece']:.4f} |
+| Calibration error (ECE) | {meta['metrics']['oof_ece']:.4f} |
 
-Kronolojik skor daha düşüktür çünkü model *gelecek* bir dönemde test edilir ve o
-dönem mevsimsel olarak farklıdır. Bu bir gerileme değil, tek dürüst ölçümdür.
-Kronolojik katlar arasındaki ±{meta['metrics']['chronological_cv_roc_auc_std']:.2f}
-oynaklık da mevsimden gelir: kışın kötü hava ayrım gücü yaratır, yazın yaratmaz.
+The chronological figure is lower because the test period is a *future* season, and
+the ±{meta['metrics']['chronological_cv_roc_auc_std']:.2f} fold spread has the same
+cause: bad weather gives the model something to discriminate on in winter and nothing
+in summer. Not a regression — the only honest measurement.
+
+*The notebook and `docs/METHODOLOGY.md` carry the same limitations in more depth,
+including the ones that do not affect this single-shipment view (warm-up scoring, one
+seasonal cycle, no concept drift).*
 """
-    )
+        )
+
+
+if __name__ == "__main__":
+    main()
