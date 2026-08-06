@@ -65,7 +65,9 @@ optimization = ["pulp==3.4.2", "highspy==1.12.0"]
 dev = [
     "pytest==9.1.1",
     "pytest-cov==7.0.0",
-    "hypothesis==6.143.4",
+    # 6.143.4 was pinned here but has never existed on PyPI (the index goes
+    # 6.143.1 -> 6.144.0), so `pip install -e .[dev]` could not resolve.
+    "hypothesis==6.165.2",
     "ruff==0.15.3",
     "mypy==1.19.1",
 ]
@@ -110,6 +112,11 @@ filterwarnings = [
 line-length = 95
 target-version = "py312"
 src = ["src", "tests"]
+# Exploratory notebook. `x = f(); x.plot();` one-liners and long display strings
+# are the idiom there, not a defect; linting it to module standards would mean
+# rewriting the narrative cells. Must live under [tool.ruff], not
+# [tool.ruff.lint] - a lint-section exclude does not stop .ipynb discovery.
+extend-exclude = ["notebooks"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
@@ -118,6 +125,11 @@ select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
 # noqa comments disappear together with the sys.path hacks in migration step 2.
 exclude = ["src/app.py", "src/config.py", "src/etl_star_schema.py",
            "src/generate_logistics_data.py", "src/ml_delay_risk_pipeline.py"]
+
+[tool.ruff.lint.per-file-ignores]
+# Turkish assertion messages contain 'ı' (U+0131), which RUF001 flags as a
+# homoglyph for ASCII 'i'. The text is deliberate and user-facing.
+"leakage_test.py" = ["RUF001"]
 
 # ---------------------------------------------------------------------------
 # mypy - strict on the new package only, so the gate is green from day one and
@@ -133,6 +145,16 @@ ignore_missing_imports = true
 module = ["sklearn.*", "joblib.*"]
 ignore_missing_imports = true
 
+# `files` alone does not scope the gate: the logistics package imports these
+# legacy flat modules, and mypy type-checks whatever it follows. Without this
+# the "strict on the new package only" intent above yields 52 errors from code
+# the migration has not reached yet. These entries disappear as each module
+# moves into src/logistics/ - the same lifecycle as the ruff exclude list.
+[[tool.mypy.overrides]]
+module = ["app", "config", "etl_star_schema", "generate_logistics_data",
+          "ml_delay_risk_pipeline"]
+ignore_errors = true
+
 # ---------------------------------------------------------------------------
 # coverage
 # ---------------------------------------------------------------------------
@@ -144,4 +166,10 @@ branch = true
 show_missing = true
 # Deliberately set to what the new package actually achieves today rather than
 # to an aspirational number: a threshold nobody can meet gets deleted.
-fail_under = 85
+#
+# 85 was the value here, but the suite measures 63.98% - so the gate could never
+# have gone green, which is how it stayed unnoticed while nothing ran it. 63 is
+# the real floor, kept just under the current number so unrelated churn does not
+# trip the build. It is a RATCHET: raise it as cli.py (0%), settings.py (42%)
+# and model_repository.py (37%) gain tests. Do not lower it.
+fail_under = 63

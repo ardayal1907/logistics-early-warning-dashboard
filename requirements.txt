@@ -19,3 +19,9 @@ pandas==3.0.5
 numpy==2.5.1
 joblib==1.5.3
 scipy==1.18.0
+
+# RUNTIME, not a test dependency: src/logistics/domain/models.py and
+# src/logistics/settings.py import it at module level. It was missing here while
+# being declared in pyproject.toml [project.dependencies], so a Streamlit Cloud
+# deploy - which installs only this file - would have died on import.
+pydantic==2.12.3

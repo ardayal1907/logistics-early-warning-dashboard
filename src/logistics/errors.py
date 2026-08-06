@@ -23,6 +23,8 @@ Two of these classes replace failure modes that were previously untyped:
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 
 class LogisticsError(Exception):
     """Base class for every deliberate failure in this system."""
@@ -38,10 +40,10 @@ class UnknownCategoryError(LogisticsError):
     actionable without opening the source.
     """
 
-    def __init__(self, field: str, value: object, known: object) -> None:
+    def __init__(self, field: str, value: object, known: Iterable[object]) -> None:
         self.field = field
         self.value = value
-        self.known = sorted(str(k) for k in known)  # type: ignore[call-overload]
+        self.known = sorted(str(k) for k in known)
         super().__init__(
             f"Unknown {field}: {value!r}. Known values: {', '.join(self.known)}. "
             f"Add an entry to the corresponding reference table in "

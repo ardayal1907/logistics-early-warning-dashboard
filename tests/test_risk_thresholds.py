@@ -5,8 +5,9 @@ invisible in aggregate statistics: a handful of shipments quietly land in the wr
 tier. These tests pin the boundary semantics down.
 """
 
-import config
 import pytest
+
+import config
 
 HIGH = config.HIGH_RISK_THRESHOLD      # 0.50
 MED = config.MEDIUM_RISK_THRESHOLD     # 0.20
@@ -32,7 +33,7 @@ def test_boundaries_are_inclusive_on_the_lower_edge(p, expected):
 def test_thresholds_derive_from_the_cost_ratio():
     """MEDIUM_RISK_THRESHOLD must be p* = 1 / (1 + C_FN/C_FP), not a magic number."""
     expected = round(1.0 / (1.0 + config.COST_FN_OVER_FP), 2)
-    assert MED == expected, (
+    assert expected == MED, (
         f"MEDIUM_RISK_THRESHOLD is {MED} but the {config.COST_FN_OVER_FP}:1 cost "
         f"ratio implies {expected}. The threshold must stay derived from the cost "
         "assumption rather than being hardcoded."
@@ -40,7 +41,7 @@ def test_thresholds_derive_from_the_cost_ratio():
 
 
 def test_high_threshold_corresponds_to_a_one_to_one_ratio():
-    assert HIGH == pytest.approx(1.0 / (1.0 + 1.0)), \
+    assert pytest.approx(1.0 / (1.0 + 1.0)) == HIGH, \
         "HIGH_RISK_THRESHOLD should be the 1:1 cost-ratio threshold (0.50)."
 
 

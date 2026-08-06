@@ -137,7 +137,9 @@ def test_batch_co2_matches_the_scalar_definition_on_the_full_grid():
     batch = carbon.compute_co2_kg_many(distances, weights, vehicles, weathers, traffics)
     scalar = [
         carbon.compute_co2_kg(d, w, v, wea, t)
-        for d, w, v, wea, t in zip(distances, weights, vehicles, weathers, traffics)
+        for d, w, v, wea, t in zip(
+            distances, weights, vehicles, weathers, traffics, strict=True
+        )
     ]
 
     assert len(batch) == 3 * 4 * 3 * 5 * 5
@@ -193,10 +195,10 @@ def test_threshold_is_monotone_decreasing_in_the_cost_ratio():
 
 
 def test_shipped_defaults_are_derived_not_typed():
-    assert risk.DEFAULT_MEDIUM_RISK_THRESHOLD == risk.threshold_for_cost_ratio(
+    assert risk.threshold_for_cost_ratio(
         risk.DEFAULT_COST_FN_OVER_FP
-    )
-    assert risk.DEFAULT_HIGH_RISK_THRESHOLD == risk.threshold_for_cost_ratio(1.0)
+    ) == risk.DEFAULT_MEDIUM_RISK_THRESHOLD
+    assert risk.threshold_for_cost_ratio(1.0) == risk.DEFAULT_HIGH_RISK_THRESHOLD
 
 
 def test_zero_or_negative_cost_ratio_is_rejected():
@@ -208,7 +210,9 @@ def test_zero_or_negative_cost_ratio_is_rejected():
 def test_expected_delay_cost_is_linear_in_probability():
     assert risk.expected_delay_cost(0.0, 1000.0) == pytest.approx(0.0)
     assert risk.expected_delay_cost(0.5, 1000.0) == pytest.approx(500.0)
-    assert risk.expected_delay_cost(0.5, 1000.0, intervention_cost=40.0) == pytest.approx(540.0)
+    assert risk.expected_delay_cost(
+        0.5, 1000.0, intervention_cost=40.0
+    ) == pytest.approx(540.0)
 
 
 def test_risk_level_is_str_compatible():

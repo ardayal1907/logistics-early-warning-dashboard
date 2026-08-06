@@ -52,7 +52,7 @@ class NullPredictionLog:
     without a destination.
     """
 
-    def record(self, assessment: ShipmentAssessment) -> None:  # noqa: D102
+    def record(self, assessment: ShipmentAssessment) -> None:
         return None
 
 

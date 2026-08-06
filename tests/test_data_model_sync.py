@@ -9,9 +9,9 @@ at startup; these tests cover both the hashing and the comparison logic, includi
 
 import hashlib
 
-import config
 import pytest
 
+import config
 
 # --- sha256_file -----------------------------------------------------------
 
@@ -127,8 +127,10 @@ def test_both_changed_are_both_reported():
 
 
 @pytest.mark.parametrize("recorded, current", [
-    ({"scored_table": None, "source_tables": None}, {"scored_table": "a", "source_tables": "b"}),
-    ({"scored_table": "a", "source_tables": "b"}, {"scored_table": None, "source_tables": None}),
+    ({"scored_table": None, "source_tables": None},
+     {"scored_table": "a", "source_tables": "b"}),
+    ({"scored_table": "a", "source_tables": "b"},
+     {"scored_table": None, "source_tables": None}),
     ({}, {"scored_table": "a", "source_tables": "b"}),
     (None, {"scored_table": "a", "source_tables": "b"}),
     ({"scored_table": "a", "source_tables": "b"}, None),
@@ -196,8 +198,9 @@ def _tiny_training_frame():
 
 
 def test_build_metadata_records_the_fingerprint():
-    import ml_delay_risk_pipeline as ml
     import pandas as pd
+
+    import ml_delay_risk_pipeline as ml
 
     df = _tiny_training_frame()
     y = pd.Series([0, 1])
@@ -212,8 +215,9 @@ def test_build_metadata_records_the_fingerprint():
 
 def test_build_metadata_tolerates_a_missing_fingerprint():
     """A partial environment must not crash the pipeline - it records None."""
-    import ml_delay_risk_pipeline as ml
     import pandas as pd
+
+    import ml_delay_risk_pipeline as ml
 
     meta = ml.build_metadata(_tiny_training_frame(), pd.Series([0, 1]),
                              metrics={}, fingerprint=None)

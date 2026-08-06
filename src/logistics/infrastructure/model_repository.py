@@ -246,7 +246,7 @@ def load_bundle(
 
     try:
         raw = joblib.load(path)
-    except Exception as exc:  # noqa: BLE001 - re-raised as a typed domain error
+    except Exception as exc:
         raise ModelArtifactError(
             f"Failed to deserialise {path}: {type(exc).__name__}: {exc}. "
             f"The file may be truncated, or it may have been written by an "

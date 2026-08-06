@@ -220,7 +220,7 @@ class ScoringService:
         frame = pd.DataFrame(rows, columns=self._feature_order)
         try:
             proba = self._bundle.model.predict_proba(frame)
-        except Exception as exc:  # noqa: BLE001 - re-raised as a typed domain error
+        except Exception as exc:
             raise ScoringError(
                 f"The model failed to score {len(items)} row(s): "
                 f"{type(exc).__name__}: {exc}"

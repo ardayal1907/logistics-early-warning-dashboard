@@ -33,9 +33,9 @@ from __future__ import annotations
 
 import itertools
 
-import config  # the legacy flat module
 import pytest
 
+import config  # the legacy flat module
 from logistics.domain import carbon as new_carbon
 from logistics.domain import risk as new_risk
 from logistics.infrastructure import fingerprint as new_fingerprint
