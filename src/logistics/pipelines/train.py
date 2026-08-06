@@ -493,13 +493,13 @@ def permutation_importance_table(eval_model, X_test, y_test) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # 9) Production model + metadata
 # ---------------------------------------------------------------------------
-def train_production_model(X, y) -> CalibratedClassifierCV:
+def train_production_model(X, y, n_splits: int = N_SPLITS) -> CalibratedClassifierCV:
     """Fit on ALL the data - correct for a model about to be deployed.
 
     The metrics reported elsewhere are honest out-of-sample measurements; they do
     NOT come from this final fit.
     """
-    model = build_model()
+    model = build_model(n_splits=n_splits)
     model.fit(X, y)
     return model
 
@@ -623,7 +623,7 @@ def verify_saved_model(model_path: Path, in_memory_model, feature_order: list) -
 # ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
-def run_evaluation(df: pd.DataFrame) -> dict[str, Any]:
+def run_evaluation(df: pd.DataFrame, n_splits: int = N_SPLITS) -> dict[str, Any]:
     """Stage 1: measure honestly. Trains nothing that is kept.
 
     Returns the chronological holdout report, the split-strategy comparison and
@@ -631,12 +631,12 @@ def run_evaluation(df: pd.DataFrame) -> dict[str, Any]:
     """
     X, y, groups = df[FEATURE_COLS], df["is_delayed"], df["Vendor_ID"]
     dates = df["Full_Date"]
-    model = build_model()
+    model = build_model(n_splits=n_splits)
 
     train_idx, test_idx = chronological_split(df)
     ev = evaluate_chronologically(model, X, y, df, train_idx, test_idx)
 
-    ts_results = chronological_cv(model, X, y, dates)
+    ts_results = chronological_cv(model, X, y, dates, n_splits=n_splits)
     ts_aucs = [r[1] for r in ts_results]
 
     logger.info(
@@ -661,8 +661,8 @@ def run_evaluation(df: pd.DataFrame) -> dict[str, Any]:
     }
 
 
-def run_scoring(df: pd.DataFrame, tables: dict[str, Any],
-                settings: Settings) -> dict[str, Any]:
+def run_scoring(df: pd.DataFrame, tables: dict[str, Any], settings: Settings,
+                n_splits: int = N_SPLITS) -> dict[str, Any]:
     """Stage 2: walk-forward score every shipment and write the scored table.
 
     Each row is scored by a model trained only on earlier shipments, which is
@@ -671,7 +671,8 @@ def run_scoring(df: pd.DataFrame, tables: dict[str, Any],
     """
     X, y, groups = df[FEATURE_COLS], df["is_delayed"], df["Vendor_ID"]
 
-    proba, warm_up_mask = score_walk_forward(build_model(), X, y, groups)
+    proba, warm_up_mask = score_walk_forward(
+        build_model(n_splits=n_splits), X, y, groups, n_splits=n_splits)
     quality = scoring_quality(y, proba)
     scored = assign_risk_levels(df, proba)
 
@@ -702,7 +703,8 @@ def run_scoring(df: pd.DataFrame, tables: dict[str, Any],
 
 
 def run_training(df: pd.DataFrame, scoring: dict[str, Any],
-                 evaluation: dict[str, Any], settings: Settings) -> dict[str, Any]:
+                 evaluation: dict[str, Any], settings: Settings,
+                 n_splits: int = N_SPLITS) -> dict[str, Any]:
     """Stage 3: fit the artefact that gets deployed, and seal it.
 
     Trained on ALL the data, which is correct for deployment and is why it
@@ -712,7 +714,7 @@ def run_training(df: pd.DataFrame, scoring: dict[str, Any],
     quality = scoring["quality"]
     ts_aucs = evaluation["chronological_cv_aucs"]
 
-    production_model = train_production_model(X, y)
+    production_model = train_production_model(X, y, n_splits=n_splits)
     metrics = {
         "oof_roc_auc": round(float(quality["roc_auc"]), 4),
         "oof_brier": round(float(quality["brier"]), 4),
@@ -751,7 +753,8 @@ def run_training(df: pd.DataFrame, scoring: dict[str, Any],
 STAGES = ("evaluate", "score", "train", "all")
 
 
-def main(settings: Settings | None = None, stage: str = "all") -> dict[str, Any]:
+def main(settings: Settings | None = None, stage: str = "all",
+         n_splits: int = N_SPLITS) -> dict[str, Any]:
     """Run one stage, or all three in order.
 
     Split out of a single 143-line function so that a caller can re-score
@@ -773,18 +776,18 @@ def main(settings: Settings | None = None, stage: str = "all") -> dict[str, Any]
 
     summary: dict[str, Any] = {"tables": tables, "dataset": df, "stage": stage}
 
-    evaluation = run_evaluation(df)
+    evaluation = run_evaluation(df, n_splits=n_splits)
     summary.update(evaluation)
     summary["split_comparison"] = evaluation["split_comparison"]
     if stage == "evaluate":
         return summary
 
-    scoring = run_scoring(df, tables, settings)
+    scoring = run_scoring(df, tables, settings, n_splits=n_splits)
     summary.update(scoring)
     if stage == "score":
         return summary
 
-    training = run_training(df, scoring, evaluation, settings)
+    training = run_training(df, scoring, evaluation, settings, n_splits=n_splits)
     summary.update(training)
     summary["importances"] = permutation_importance_table(
         evaluation["eval_model"],
