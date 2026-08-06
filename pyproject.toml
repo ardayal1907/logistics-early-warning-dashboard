@@ -58,6 +58,10 @@ dependencies = [
 # a UI framework to be installed.
 ui = ["streamlit==1.60.0"]
 
+# The HTTP delivery layer. Optional for the same reason: a batch training
+# container has no business carrying a web framework.
+api = ["fastapi==0.141.1", "uvicorn[standard]==0.52.1"]
+
 # The operations-research layer. Kept optional so the scoring service stays
 # deployable without a MILP solver on the image.
 optimization = ["pulp==3.4.2", "highspy==1.12.0"]
@@ -71,6 +75,10 @@ dev = [
     "pytest==9.1.1",
     "pytest-cov==7.0.0",
     "pandera==0.32.1",
+    # The API and the client its tests drive it with.
+    "fastapi==0.141.1",
+    "uvicorn[standard]==0.52.1",
+    "httpx==0.28.1",
     # 6.143.4 was pinned here but has never existed on PyPI (the index goes
     # 6.143.1 -> 6.144.0), so `pip install -e .[dev]` could not resolve.
     "hypothesis==6.165.2",
@@ -129,6 +137,13 @@ select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
 # The exclude list is empty as of migration step 2: the sys.path.insert hacks
 # and the `# noqa: E402` comments that forced it are gone, so the legacy flat
 # modules lint like everything else.
+
+[tool.ruff.lint.flake8-bugbear]
+# `def handler(service: X = Depends(get_service))` is FastAPI's declared
+# idiom, not the mutable-default bug B008 exists to catch: Depends() returns
+# an immutable marker that the framework resolves per request.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Path",
+                          "fastapi.Body", "fastapi.Header"]
 
 [tool.ruff.lint.per-file-ignores]
 # Turkish assertion messages contain 'ı' (U+0131), which RUF001 flags as a
