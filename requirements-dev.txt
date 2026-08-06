@@ -34,3 +34,9 @@ httpx==0.28.1
 # and enforced by .github/workflows/tests.yml.
 ruff==0.15.3
 mypy==1.19.1
+
+# The LP solver for logistics.optimization (Phase 1, Block B). Declared as the
+# `optimization` extra in pyproject.toml. 3.4.2 / highspy 1.12.0 were pinned
+# there and neither has ever existed on PyPI.
+pulp==3.3.2
+highspy==1.15.1

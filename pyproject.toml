@@ -30,11 +30,11 @@ build-backend = "hatchling.build"
 [project]
 name = "logistics-early-warning"
 version = "0.1.0"
-# Says what the package DOES today. "emission optimisation" belongs here only
-# once src/logistics/optimization/ exists - a description is a claim, and an
-# unimplemented claim in package metadata is the same defect as a console script
-# that resolves to nothing.
-description = "Delay-risk prediction and carbon accounting for logistics operations"
+# Says what the package DOES today. A description is a claim, and an
+# unimplemented claim in package metadata is the same defect as a console
+# script that resolves to nothing. "modal allocation" earned its place in
+# migration step 8; vendor assignment (Block A) has NOT, and is absent.
+description = "Delay-risk prediction, carbon accounting and modal allocation for logistics operations"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.12,<3.13"
@@ -64,7 +64,10 @@ api = ["fastapi==0.141.1", "uvicorn[standard]==0.52.1"]
 
 # The operations-research layer. Kept optional so the scoring service stays
 # deployable without a MILP solver on the image.
-optimization = ["pulp==3.4.2", "highspy==1.12.0"]
+# 3.4.2 / 1.12.0 were pinned here and neither has ever existed on PyPI (pulp
+# stops at 3.3.2), so `pip install .[optimization]` could not resolve. These
+# are the versions actually installed and tested against.
+optimization = ["pulp==3.3.2", "highspy==1.15.1"]
 
 # Data contracts. Optional for the same reason as `ui`: the scoring service
 # never imports logistics.contracts, so a serving image should not carry
@@ -91,9 +94,9 @@ logistics-generate = "logistics.cli:generate_data"
 logistics-etl = "logistics.cli:run_etl"
 logistics-train = "logistics.cli:train_model"
 logistics-score = "logistics.cli:score_batch"
-# logistics-optimize is deliberately absent until logistics/optimization/ exists.
-# An entry point that resolves to nothing is a broken console script, not a
-# roadmap item.
+# Phase 1 (Block B, modal allocation) only. Block A - vendor assignment, where
+# all of the ML lives - is not implemented, and the command says so.
+logistics-optimize = "logistics.cli:optimise"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/logistics"]
