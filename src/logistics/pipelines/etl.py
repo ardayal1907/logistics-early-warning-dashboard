@@ -23,6 +23,7 @@ nothing runs until main() is called.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from pathlib import Path
 
@@ -97,13 +98,36 @@ def build_dim_vendor(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # 2) Dim_Route - Route_ID (PK) + the route attribute combination
 # ---------------------------------------------------------------------------
-def build_dim_route(df: pd.DataFrame) -> pd.DataFrame:
-    """One row per distinct route combination, with a surrogate key.
+def route_key(*values: object) -> str:
+    """A Route_ID derived from the route's own attributes, not its row number.
 
-    Note the key is assigned from row position, so inserting one new
-    combination renumbers every existing route. That is a real defect and it is
-    migration step 6's subject; it is preserved here on purpose, because this
-    step must not change the bytes it writes.
+    `RT-` + the first 10 hex characters of sha1 over the natural key. The
+    separator is the ASCII unit separator, which cannot occur in a city or
+    vehicle name, so ("AB", "C") and ("A", "BC") cannot collide by
+    concatenation.
+
+    Why this replaced `RT-{row_position:05d}`: the old key was assigned from
+    position in a sorted, de-duplicated frame, so inserting ONE new route
+    combination renumbered every existing route. Measured on the shipped data:
+    1,346 of 1,346 Route_IDs changed. Incremental loading was structurally
+    impossible, and the failure was silent - old facts kept pointing at the
+    same key, which now meant a different route.
+
+    10 hex characters is 40 bits. For 1,346 rows the collision probability is
+    about 8e-7, and a collision is not silent either way: validate_star_schema
+    asserts Route_ID uniqueness and this function's output feeds straight into
+    it.
+    """
+    joined = "\x1f".join(str(v) for v in values)
+    return f"RT-{hashlib.sha1(joined.encode('utf-8')).hexdigest()[:10]}"
+
+
+def build_dim_route(df: pd.DataFrame) -> pd.DataFrame:
+    """One row per distinct route combination, with a content-addressed key.
+
+    The sort is kept for a stable, diff-friendly row ORDER, but the key no
+    longer depends on it: reordering or inserting rows leaves every existing
+    Route_ID untouched.
     """
     dim_route = (
         df[ROUTE_COLUMNS]
@@ -113,7 +137,7 @@ def build_dim_route(df: pd.DataFrame) -> pd.DataFrame:
     )
     dim_route.insert(
         0, "Route_ID",
-        [f"RT-{str(i).zfill(5)}" for i in range(1, len(dim_route) + 1)],
+        [route_key(*row) for row in dim_route[ROUTE_COLUMNS].itertuples(index=False)],
     )
     return dim_route
 

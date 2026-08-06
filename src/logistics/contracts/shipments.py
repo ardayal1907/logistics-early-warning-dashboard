@@ -36,6 +36,22 @@ RISK_LEVELS = [r.value for r in RiskLevel]
 # violation is an order of magnitude larger.
 MAX_DISTANCE_CV = 0.15
 
+# TRANSITIONAL, and deliberately so.
+#
+#   RT-a1b2c3d4e5   content-addressed, what etl.route_key produces today
+#   RT-00001        positional, what the CSVs committed under data/ still hold
+#
+# The code was fixed in migration step 6; the DATA has not been regenerated,
+# because doing so rewrites Dim_Route.csv and Fact_Shipments.csv, breaks the
+# Route_ID foreign key in Fact_Shipments_with_ML.csv, and therefore requires
+# re-scoring and retraining. Drop the positional alternative the moment that
+# run happens - keeping both accepted forever would mean the contract cannot
+# tell a durable key from the defect it replaced.
+ROUTE_ID_PATTERN = r"^RT-([0-9a-f]{10}|\d{5})$"
+
+# What new output must match. Nothing on disk is checked against this yet.
+DURABLE_ROUTE_ID_PATTERN = r"^RT-[0-9a-f]{10}$"
+
 
 def _positive(name: str, maximum: float | None = None) -> Column:
     checks = [Check.gt(0, error=f"{name} must be positive")]
@@ -77,7 +93,7 @@ DIM_VENDOR_SCHEMA = DataFrameSchema(
 
 DIM_ROUTE_SCHEMA = DataFrameSchema(
     {
-        "Route_ID": Column(str, Check.str_matches(r"^RT-\d{5}$"), unique=True),
+        "Route_ID": Column(str, Check.str_matches(ROUTE_ID_PATTERN), unique=True),
         "Origin": Column(str),
         "Destination": Column(str),
         "Vehicle_Type": Column(str, Check.isin(VEHICLE_TYPES)),
@@ -94,7 +110,7 @@ FACT_SHIPMENTS_SCHEMA = DataFrameSchema(
         "Shipment_ID": Column(str, Check.str_matches(r"^SHP-\d{5}$"), unique=True),
         "Date_ID": Column(int, Check.in_range(19000101, 99991231)),
         "Vendor_ID": Column(str, Check.str_matches(r"^VEND-\d{3}$")),
-        "Route_ID": Column(str, Check.str_matches(r"^RT-\d{5}$")),
+        "Route_ID": Column(str, Check.str_matches(ROUTE_ID_PATTERN)),
         "Weight_tons": _positive("Weight_tons", maximum=100.0),
         "Distance_km": _positive("Distance_km", maximum=5000.0),
         "Actual_Delay_Days": Column(int, [Check.ge(0), Check.le(30)]),
@@ -164,9 +180,11 @@ def validate_distance_consistency(
 __all__ = [
     "DIM_ROUTE_SCHEMA",
     "DIM_VENDOR_SCHEMA",
+    "DURABLE_ROUTE_ID_PATTERN",
     "FACT_SHIPMENTS_SCHEMA",
     "MAX_DISTANCE_CV",
     "RAW_SHIPMENTS_SCHEMA",
+    "ROUTE_ID_PATTERN",
     "SCORED_SHIPMENTS_SCHEMA",
     "distance_consistency_report",
     "validate_distance_consistency",

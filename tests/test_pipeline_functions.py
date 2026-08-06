@@ -55,7 +55,11 @@ def test_build_dim_route_assigns_one_key_per_distinct_combination(tiny_raw):
     dim = etl.build_dim_route(tiny_raw)
     assert len(dim) == 2                       # two distinct route combinations
     assert dim.Route_ID.is_unique
-    assert list(dim.Route_ID) == ["RT-00001", "RT-00002"]
+    # The keys are content-addressed, not positional: asserting the literal
+    # ["RT-00001", "RT-00002"] is what made the old numbering look correct.
+    assert dim.Route_ID.str.fullmatch(r"RT-[0-9a-f]{10}").all()
+    expected_first = etl.route_key(*dim.loc[0, etl.ROUTE_COLUMNS])
+    assert dim.loc[0, "Route_ID"] == expected_first
 
 
 def test_build_dim_date_is_contiguous_and_covers_empty_days(tiny_raw):
