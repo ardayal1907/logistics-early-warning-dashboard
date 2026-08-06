@@ -151,14 +151,17 @@ ignore_missing_imports = true
 module = ["sklearn.*", "joblib.*"]
 ignore_missing_imports = true
 
-# `files` alone does not scope the gate: the logistics package imports these
-# legacy flat modules, and mypy type-checks whatever it follows. Without this
-# the "strict on the new package only" intent above yields 52 errors from code
-# the migration has not reached yet. These entries disappear as each module
-# moves into src/logistics/ - the same lifecycle as the ruff exclude list.
+# Migration step 4 moved the generator and the training pipeline INTO the
+# package, so strict mode now reaches ~1,100 lines of statistical code that was
+# written without annotations. Annotating it is a separate change with its own
+# risk: these functions are numerically load-bearing and the model artefact is
+# reproduced from them bit for bit.
+#
+# The modules the step actually rewrote - pipelines/etl.py, pipelines/report.py
+# and everything under domain/, infrastructure/ and services/ - stay strict.
+# Remove these two entries as the annotations land, one module at a time.
 [[tool.mypy.overrides]]
-module = ["app", "config", "etl_star_schema", "generate_logistics_data",
-          "ml_delay_risk_pipeline"]
+module = ["logistics.pipelines.generate", "logistics.pipelines.train"]
 ignore_errors = true
 
 # ---------------------------------------------------------------------------
