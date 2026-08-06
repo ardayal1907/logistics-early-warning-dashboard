@@ -42,7 +42,6 @@ Importing this module has no side effects: nothing runs until main() is called.
 
 import json
 import platform
-import sys
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -51,18 +50,33 @@ import joblib
 import numpy as np
 import pandas as pd
 import sklearn
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.calibration import CalibratedClassifierCV
-from sklearn.model_selection import (
-    cross_val_predict, StratifiedKFold, StratifiedGroupKFold, TimeSeriesSplit,
-)
-from sklearn.metrics import (
-    classification_report, roc_auc_score, brier_score_loss,
-)
-from sklearn.preprocessing import OneHotEncoder
 from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.inspection import permutation_importance
+from sklearn.metrics import (
+    brier_score_loss,
+    classification_report,
+    roc_auc_score,
+)
+from sklearn.model_selection import (
+    StratifiedGroupKFold,
+    StratifiedKFold,
+    TimeSeriesSplit,
+    cross_val_predict,
+)
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder
+
+# Risk tiers and the cost assumption behind them live in one place - see
+# src/config.py, which now re-exports them from logistics.domain.risk.
+from config import (
+    COST_FN_OVER_FP,
+    HIGH_RISK_THRESHOLD,
+    MEDIUM_RISK_THRESHOLD,
+    classify_risk,
+    compute_data_fingerprint,
+)
 
 RANDOM_STATE = 42
 N_SPLITS = 5
@@ -72,13 +86,6 @@ N_SPLITS = 5
 ROOT = Path(__file__).resolve().parent.parent
 PROCESSED_DIR = ROOT / "data" / "processed"
 MODEL_DIR = ROOT / "models"
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-# Risk tiers and the cost assumption behind them live in one place - see src/config.py.
-from config import (  # noqa: E402
-    COST_FN_OVER_FP, HIGH_RISK_THRESHOLD, MEDIUM_RISK_THRESHOLD, classify_risk,
-    compute_data_fingerprint,
-)
 
 NUMERIC_FEATURES = ["Distance_km", "Weight_tons", "Vendor_Rating"]
 CATEGORICAL_FEATURES = ["Weather_Condition", "Traffic_Density", "Vehicle_Type"]
@@ -512,7 +519,7 @@ def build_metadata(df: pd.DataFrame, y, metrics: dict,
         "metrics": metrics,
 
         "training_data": {
-            "n_rows": int(len(df)),
+            "n_rows": len(df),
             "positive_rate": round(float(y.mean()), 4),
             "date_min": df["Full_Date"].min().strftime("%Y-%m-%d"),
             "date_max": df["Full_Date"].max().strftime("%Y-%m-%d"),
