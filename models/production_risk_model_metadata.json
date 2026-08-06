@@ -1,0 +1,89 @@
+{
+  "model_name": "logistics_delay_risk",
+  "trained_at": "2026-08-04T10:47:32+03:00",
+  "feature_order": [
+    "Distance_km",
+    "Weight_tons",
+    "Vendor_Rating",
+    "Weather_Condition",
+    "Traffic_Density",
+    "Vehicle_Type"
+  ],
+  "numeric_features": [
+    "Distance_km",
+    "Weight_tons",
+    "Vendor_Rating"
+  ],
+  "categorical_features": [
+    "Weather_Condition",
+    "Traffic_Density",
+    "Vehicle_Type"
+  ],
+  "categorical_levels": {
+    "Weather_Condition": [
+      "Normal",
+      "Rain",
+      "Snow",
+      "Storm"
+    ],
+    "Traffic_Density": [
+      "High",
+      "Low",
+      "Medium"
+    ],
+    "Vehicle_Type": [
+      "Diesel Truck",
+      "Electric Semi",
+      "Hybrid Van"
+    ]
+  },
+  "numeric_ranges": {
+    "Distance_km": {
+      "min": 51.1,
+      "max": 1199.7
+    },
+    "Weight_tons": {
+      "min": 1.01,
+      "max": 24.99
+    },
+    "Vendor_Rating": {
+      "min": 1.71,
+      "max": 4.89
+    }
+  },
+  "thresholds": {
+    "high_risk": 0.5,
+    "medium_risk": 0.2,
+    "cost_fn_over_fp": 4.0,
+    "derivation": "p* = 1 / (1 + C_FN/C_FP); high_risk = the 1:1 ratio threshold"
+  },
+  "metrics": {
+    "oof_roc_auc": 0.7558,
+    "oof_brier": 0.1401,
+    "oof_ece": 0.0232,
+    "chronological_holdout_roc_auc": 0.7375,
+    "chronological_cv_roc_auc_mean": 0.7556,
+    "chronological_cv_roc_auc_std": 0.0499
+  },
+  "training_data": {
+    "n_rows": 1500,
+    "positive_rate": 0.2153,
+    "date_min": "2025-08-01",
+    "date_max": "2026-07-31",
+    "is_synthetic": true
+  },
+  "training_data_sha256": "b9feed16c185ef39ba231918325f2a83955a19d8dcb537e768f7ed835424406b",
+  "source_tables_sha256": "46c157c03b90d96e3307a0f48331261cad799e57bd9bc74229e5889714a6714e",
+  "versions": {
+    "python": "3.12.10",
+    "scikit_learn": "1.9.0",
+    "numpy": "2.5.1",
+    "pandas": "3.0.5"
+  },
+  "caveats": [
+    "Trained on synthetic data; does not represent real-world performance.",
+    "Probabilities were calibrated with isotonic regression (ECE ~0.03), but reliability is low above p>0.8 because of sparse observations.",
+    "Thresholds are derived from a 4:1 cost assumption; that ratio has not been validated against real SLA penalty schedules.",
+    "CO2_Emission_kg is NOT an output of this model; it is computed by a deterministic formula (see generate_logistics_data.py)."
+  ]
+}

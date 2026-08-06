@@ -1,0 +1,21 @@
+# Versions are PINNED - this is a requirement, not a preference.
+#
+# models/production_risk_model.pkl is a pickle, and the internal layout of
+# scikit-learn objects changes between releases. If Streamlit Cloud installs a
+# different scikit-learn, the model either loads with an
+# InconsistentVersionWarning and SILENTLY produces different predictions, or it
+# fails outright. The scikit-learn version must be IDENTICAL to the one that
+# trained the model.
+#
+# The model was trained with these versions (cross-check against the "versions"
+# field in models/production_risk_model_metadata.json):
+#   python 3.12.10 · scikit-learn 1.9.0 · numpy 2.5.1 · pandas 3.0.5
+#
+# If you retrain the model, update this file too.
+
+streamlit==1.60.0
+scikit-learn==1.9.0
+pandas==3.0.5
+numpy==2.5.1
+joblib==1.5.3
+scipy==1.18.0

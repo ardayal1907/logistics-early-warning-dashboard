@@ -1,0 +1,5 @@
+*.csv -text
+*.pkl binary
+*.pbix binary
+*.dax text eol=lf
+* text=auto

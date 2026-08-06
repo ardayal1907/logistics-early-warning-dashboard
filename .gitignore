@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# Test tooling
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Model artefacts
+*.pkl
+*.joblib
+
+# EXCEPTION: the production model MUST be committed.
+# The Streamlit Cloud deployment loads this file from the repository; if it were
+# ignored, the model could not be found at deploy time and the app would crash
+# on startup.
+!models/production_risk_model.pkl
+!models/production_risk_model_metadata.json
+
+# Demo artefacts produced by the notebook - not production, not needed in the repo.
+# (The notebook writes them to whichever directory it runs from, hence the ** globs.)
+demo_logistics_risk_model.pkl
+demo_risk_model_output.csv
+**/demo_logistics_risk_model.pkl
+**/demo_risk_model_output.csv
+
+# NOTE: data/ is DELIBERATELY not ignored. The Power BI report and the Streamlit
+# demo must work the moment the repository is cloned, so the generated CSVs are
+# committed. The data is synthetic, carries no privacy risk, and totals ~1.5 MB.
+
+# Local backups
+backup_v*/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# OS
+.DS_Store
+Thumbs.db

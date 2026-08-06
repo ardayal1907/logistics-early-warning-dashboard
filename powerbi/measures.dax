@@ -1,0 +1,205 @@
+// ===========================================================================
+//  Logistics Delay-Risk Prediction & Carbon Cost Dashboard
+//  DAX measures — plain-text reference for Lojistik_Erken_Uyari_Paneli.pbix
+// ===========================================================================
+//
+//  WHY THIS FILE EXISTS
+//  --------------------
+//  A .pbix is a binary. Its measures cannot be diffed, code-reviewed, or read
+//  by anyone without Power BI Desktop installed. This file mirrors them as text
+//  so the semantic model is reviewable alongside the Python code.
+//
+//  PROVENANCE AND VERIFICATION STATUS  ***READ THIS***
+//  ---------------------------------------------------
+//  Everything below is verified. Nothing in this file is a reconstruction.
+//
+//  Measure NAMES and field bindings were extracted programmatically from the
+//  .pbix report definition (Report/definition/pages/**/visual.json), which is
+//  plain JSON in the PBIR format. The JSON was walked structurally — as a tree,
+//  not with a regex over a flattened blob, because a non-greedy regex mis-pairs
+//  a field name with the aggregation code that follows it.
+//
+//  Measure EXPRESSIONS were read out of the live model with DAX Studio,
+//  connected to the running Power BI Desktop instance:
+//
+//      SELECT [Name], [Expression] FROM $SYSTEM.TMSCHEMA_MEASURES
+//
+//  The query returned EXACTLY FOUR ROWS — the four measures below. The model
+//  contains no other measure: none hidden, none unused, none sitting on no
+//  visual. That is a complete enumeration from the semantic model itself, not
+//  an inference from the report definition, and it closes the one gap the
+//  report definition could never close.
+//
+//  (The `DataModel` stream itself stays unreadable by direct parsing — it is
+//  compressed VertiPaq, and neither the measure names nor "DIVIDE" occur in it
+//  as ASCII or UTF-16LE. DAX Studio queries the loaded model, not the file.)
+//
+//  Extracted from : powerbi/Lojistik_Erken_Uyari_Paneli.pbix
+//  SHA-256        : 7054068B877B21B7FC1E39E202FDE6833BF272535D3C64B8B3D6099CAB97EB81
+//  Size           : 158,916 bytes
+//  Pages          : "Executive Summary", "Early Warning Panel"
+//  Fact table     : Fact_Shipments_with_ML
+//  Dimensions     : Dim_Vendor, Dim_Route, Dim_Date
+//
+//  This file supersedes two earlier versions: one written from documentation
+//  alone, and one written from a superseded .pbix that did not match the
+//  screenshots. Both are gone; the divergence they recorded is resolved.
+// ===========================================================================
+
+
+// ---------------------------------------------------------------------------
+// SECTION 1 — Every measure in the model  [COMPLETE — 4 of 4]
+// ---------------------------------------------------------------------------
+// TMSCHEMA_MEASURES returned four rows and these are those four. Every one of
+// them is also bound to at least one visual, so the model carries no dead
+// measures.
+
+
+// Used on: "Executive Summary" — KPI card (reads 1,23K), and the column chart
+//          "Total CO2 Tons by Vehicle_Type" (Y axis, Vehicle_Type on category).
+// [NAME CONFIRMED] [VERIFIED VIA DAX STUDIO — TMSCHEMA_MEASURES]
+//
+// Converts the raw kg-level emission figures aggregated in the fact table into
+// metric tons, the standard unit for corporate carbon reporting.
+MEASURE 'Fact_Shipments_with_ML'[Total CO2 Tons] =
+    DIVIDE ( SUM ( Fact_Shipments_with_ML[CO2_Emission_kg] ), 1000 )
+
+
+// Used on: "Executive Summary" — KPI card (reads 61,63K).
+// [NAME CONFIRMED] [VERIFIED VIA DAX STUDIO — TMSCHEMA_MEASURES]
+//
+// Applies a $50/ton carbon price — a commonly cited mid-range figure used in
+// voluntary carbon pricing and internal carbon fee models — to turn emissions
+// into a projected financial liability.
+//
+// ⚠️ The multiplier is duplicated: it also lives in src/config.py as
+//    CARBON_PRICE_PER_TON. Power BI cannot import from Python, so changing one
+//    REQUIRES changing the other by hand. Nothing will warn you if you forget.
+MEASURE 'Fact_Shipments_with_ML'[Carbon Tax Impact ($)] =
+    [Total CO2 Tons] * 50
+
+
+// Used on: "Executive Summary" — KPI card (reads 0,39).
+// [NAME CONFIRMED] [VERIFIED VIA DAX STUDIO — TMSCHEMA_MEASURES]
+//
+// This one was previously a reconstruction from the measure name and the card
+// value; the DAX Studio read confirmed it. Reads 0.3920 on the current dataset,
+// which is the 0,39 on the card.
+MEASURE 'Fact_Shipments_with_ML'[Average Delay Days] =
+    AVERAGE ( Fact_Shipments_with_ML[Actual_Delay_Days] )
+
+
+// Used on: "Early Warning Panel" — KPI card.
+// [NAME CONFIRMED] [VERIFIED VIA DAX STUDIO — TMSCHEMA_MEASURES]
+//
+// The share of the current shipment population (respecting all active
+// slicers/filters) that falls into the highest-risk delay tier — the project's
+// primary early-warning KPI.
+//
+// The card is formatted as a percentage and reads %10,27; the donut on the same
+// page independently shows 154 of 1,500 shipments in the High Risk tier
+// (10,2%). 154/1500 = 10.27%, so the two agree. An earlier version
+// of the data generator produced 84.3%; a panel where most shipments glow red
+// carries no information, because an alert is only informative when it fires
+// rarely. The thresholds behind the tiers are derived from a cost matrix, not
+// percentiles — see src/config.py (COST_FN_OVER_FP, HIGH_RISK_THRESHOLD,
+// MEDIUM_RISK_THRESHOLD).
+MEASURE 'Fact_Shipments_with_ML'[High Risk Rate %] =
+    DIVIDE (
+        CALCULATE (
+            COUNTROWS ( Fact_Shipments_with_ML ),
+            Fact_Shipments_with_ML[Risk_Level] = "High Risk"
+        ),
+        COUNTROWS ( Fact_Shipments_with_ML )
+    )
+
+
+// ---------------------------------------------------------------------------
+// SECTION 2 — Implicit aggregations in this .pbix (NOT measures)
+// ---------------------------------------------------------------------------
+// Fields dragged straight onto a visual and aggregated automatically by Power
+// BI. They carry no DAX definition and are listed so the inventory is complete.
+//
+//   "Executive Summary" / KPI card
+//       Count of Shipment_ID  →  reads 1,5K
+//       (documented as "Total Shipments" in docs/METHODOLOGY.md)
+//
+//   "Early Warning Panel" / donut chart
+//       Count of Shipment_ID, grouped by Risk_Level
+//       Reads 939 Low (62,6%) · 407 Medium (27,1%) · 154 High (10,2%)
+//
+//   "Early Warning Panel" / table (tableEx)
+//       Shipment_ID · Weather_Condition (Dim_Route) · Risk_Level ·
+//       Average of Delay_Risk_Probability · Vendor_ID
+//       The probability column is an AVERAGE. Summing a probability would
+//       produce a meaningless total; the visible column total is 0,22.
+//
+//   "Early Warning Panel" / Key Influencers
+//       Target Risk_Level, explained by Vendor_Rating (Dim_Vendor),
+//       Traffic_Density and Weather_Condition (Dim_Route). Uses no measure.
+
+
+// ---------------------------------------------------------------------------
+// SECTION 3 — How the aggregation codes above were read
+// ---------------------------------------------------------------------------
+// An implicit aggregation appears in the JSON as
+//     {"Aggregation": {"Expression": {"Column": {"Property": "<col>"}},
+//                      "Function": <int>}}
+// Only two codes occur in this file, and both are confirmed against
+// screenshots/ — this is not an assumed enum:
+//
+//     Function = 1  →  Average   (table header reads "Average of
+//                                 Delay_Risk_Probability")
+//     Function = 2  →  Count     (donut title reads "Count of Shipment_ID by
+//                                 Risk_Level"; card labelled "Count of
+//                                 Shipment_ID")
+//
+// `Function = 0` is believed to be Sum — the default for a numeric field — but
+// no field in this file uses it, so it stays inferred. Do not assume any other
+// mapping without re-calibrating against a rendered visual.
+//
+// ⚠️ IGNORE `queryRef` WHEN READING AGGREGATIONS. It is a human-readable label
+//    captured when the field was first placed and it is NOT updated when the
+//    user later changes the aggregation. Two fields in this file prove it:
+//      · table probability column — queryRef "Sum(...Delay_Risk_Probability)"
+//        but Function = 1, and the rendered header says Average
+//      · Executive Summary count card — queryRef "Min(...Shipment_ID)"
+//        but Function = 2, and the rendered card says Count of
+//    `Function` is authoritative; `queryRef` is stale history.
+
+
+// ---------------------------------------------------------------------------
+// RESOLVED — the "two different reports" problem
+// ---------------------------------------------------------------------------
+// A superseded .pbix (SHA-256 B4969442B8F8…, 132 KB) was committed here for a
+// while. It did not match screenshots/: its donut summed Distance_km, its table
+// summed the risk probability, it had no Vendor_ID column, and it bound a
+// `High Risk Shipments` measure that appears in no documentation. The correct
+// report was elsewhere on the author's machine; `High Risk Rate %` was added to
+// it and it was saved over the repo copy.
+//
+// `High Risk Shipments` did NOT survive that replacement. It is bound to no
+// visual, and TMSCHEMA_MEASURES did not return it — so it does not exist in the
+// model either. It is gone for good; do not reintroduce it from an old document.
+
+
+// ---------------------------------------------------------------------------
+// HOW TO RE-VERIFY THIS FILE AFTER CHANGING THE .PBIX
+// ---------------------------------------------------------------------------
+// This file follows the .pbix, never the other way round. If you edit the report
+// or the model, redo BOTH halves — they answer different questions:
+//
+// 1. EXPRESSIONS and the complete measure list — install DAX Studio (free),
+//    connect it to the running Power BI Desktop instance and run
+//        SELECT [Name], [Expression] FROM $SYSTEM.TMSCHEMA_MEASURES
+//    One grid, every measure, full definitions. This is the only method that
+//    sees a measure sitting on no visual, and the only one that reads the DAX.
+//
+// 2. BINDINGS — which visual on which page uses what — come from the report
+//    definition JSON inside the .pbix ZIP, walked structurally. TMSCHEMA cannot
+//    answer this; it knows the model, not the canvas.
+//
+// Add anything new, delete anything that disappeared, and mirror the change into
+// README.md and docs/METHODOLOGY.md. A measure documented here that no longer
+// exists is worse than an undocumented one.
+// ---------------------------------------------------------------------------

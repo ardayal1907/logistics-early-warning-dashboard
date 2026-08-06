@@ -1,0 +1,147 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+# ---------------------------------------------------------------------------
+# Why this file exists
+# ---------------------------------------------------------------------------
+# Before it, four separate files repaired sys.path by hand in order to import a
+# top-level module called `config`:
+#
+#     src/app.py:25                    sys.path.insert(0, ...)
+#     src/ml_delay_risk_pipeline.py:75 sys.path.insert(0, ...)
+#     src/generate_logistics_data.py:46 sys.path.insert(0, ...)
+#     tests/conftest.py:18             sys.path.insert(0, ...)
+#
+# Three consequences, all of them blocking at enterprise scale:
+#   1. The project could not be built into a wheel, so it could not be consumed
+#      as a dependency by any other service.
+#   2. `config` and `app` are two of the most commonly colliding top-level names
+#      in the Python ecosystem, and insert(0, ...) puts them AHEAD of
+#      site-packages - the shadowing works outwards from this project too.
+#   3. There was no `__version__`, so no way to say which code produced which
+#      model artefact.
+#
+# The `logistics` package below fixes all three. The legacy flat modules in
+# src/ keep working unchanged during the migration: `pythonpath = ["src"]`
+# below keeps `import config` resolvable for the existing test suite.
+# ---------------------------------------------------------------------------
+
+[project]
+name = "logistics-early-warning"
+version = "0.1.0"
+# Says what the package DOES today. "emission optimisation" belongs here only
+# once src/logistics/optimization/ exists - a description is a claim, and an
+# unimplemented claim in package metadata is the same defect as a console script
+# that resolves to nothing.
+description = "Delay-risk prediction and carbon accounting for logistics operations"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.12,<3.13"
+
+# Pinned for the same reason requirements.txt is pinned: the production model
+# is a pickle, and the internal layout of scikit-learn objects changes between
+# releases. See models/production_risk_model_metadata.json -> "versions".
+dependencies = [
+    "numpy==2.5.1",
+    "pandas==3.0.5",
+    "scikit-learn==1.9.0",
+    "scipy==1.18.0",
+    "joblib==1.5.3",
+    "pydantic==2.12.3",
+]
+
+[project.optional-dependencies]
+# Streamlit is a PRESENTATION concern. A nightly ETL/training container has no
+# business pulling in tornado, altair, pyarrow and protobuf - that is image size
+# and CVE surface for nothing. Equally, running the test suite must not require
+# a UI framework to be installed.
+ui = ["streamlit==1.60.0"]
+
+# The operations-research layer. Kept optional so the scoring service stays
+# deployable without a MILP solver on the image.
+optimization = ["pulp==3.4.2", "highspy==1.12.0"]
+
+dev = [
+    "pytest==9.1.1",
+    "pytest-cov==7.0.0",
+    "hypothesis==6.143.4",
+    "ruff==0.15.3",
+    "mypy==1.19.1",
+]
+
+[project.scripts]
+logistics-generate = "logistics.cli:generate_data"
+logistics-etl = "logistics.cli:run_etl"
+logistics-train = "logistics.cli:train_model"
+logistics-score = "logistics.cli:score_batch"
+# logistics-optimize is deliberately absent until logistics/optimization/ exists.
+# An entry point that resolves to nothing is a broken console script, not a
+# roadmap item.
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/logistics"]
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Replaces the sys.path.insert in tests/conftest.py. Both the new `logistics`
+# package and the legacy flat modules (`config`, `app`, ...) resolve from here,
+# so the existing suite keeps passing untouched during the migration.
+pythonpath = ["src"]
+addopts = "--strict-markers"
+markers = [
+    "slow: needs generated data or the 8.7 MB model artefact",
+    "ui: needs streamlit installed",
+]
+filterwarnings = [
+    # The failure mode requirements.txt warns about in its own header -
+    # "SILENTLY produces different predictions" - must not be a warning that
+    # scrolls past in a green build.
+    "error::sklearn.exceptions.InconsistentVersionWarning",
+]
+
+# ---------------------------------------------------------------------------
+# ruff
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 95
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+# The legacy flat modules carry `# noqa: E402` because they import after a
+# sys.path.insert. They are excluded rather than rewritten in this step; the
+# noqa comments disappear together with the sys.path hacks in migration step 2.
+exclude = ["src/app.py", "src/config.py", "src/etl_star_schema.py",
+           "src/generate_logistics_data.py", "src/ml_delay_risk_pipeline.py"]
+
+# ---------------------------------------------------------------------------
+# mypy - strict on the new package only, so the gate is green from day one and
+# tightens as modules migrate into it.
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+files = ["src/logistics"]
+strict = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["sklearn.*", "joblib.*"]
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------------------
+# coverage
+# ---------------------------------------------------------------------------
+[tool.coverage.run]
+source = ["src/logistics"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+# Deliberately set to what the new package actually achieves today rather than
+# to an aspirational number: a threshold nobody can meet gets deleted.
+fail_under = 85
