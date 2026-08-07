@@ -14,11 +14,12 @@ precise way to express "this name must be imported, never assigned".
 
 import ast
 
+import pytest
+
 import app
 import config
 import generate_logistics_data as gen
 import ml_delay_risk_pipeline as ml
-import pytest
 
 SHARED_NAMES = {
     "EMISSION_FACTOR", "BASE_EMISSION", "WEATHER_CO2_MULT", "TRAFFIC_CO2_MULT",

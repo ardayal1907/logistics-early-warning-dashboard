@@ -66,7 +66,7 @@ def write_csv_deterministically(df: pd.DataFrame, path: str | Path, **kwargs: ob
     reproducible across Windows, Linux and macOS. Use this everywhere a file's
     hash is recorded or compared.
     """
-    df.to_csv(path, index=False, lineterminator="\n", encoding="utf-8", **kwargs)  # type: ignore[arg-type]
+    df.to_csv(path, index=False, lineterminator="\n", encoding="utf-8", **kwargs)
 
 
 def compute_data_fingerprint(processed_dir: str | Path) -> dict[str, str | None]:
@@ -84,15 +84,20 @@ def compute_data_fingerprint(processed_dir: str | Path) -> dict[str, str | None]
     scored_path = directory / SCORED_TABLE
     scored = sha256_file(scored_path) if scored_path.exists() else None
 
-    parts: list[str] | None = []
+    parts: list[str] = []
+    complete = True
     for name in SOURCE_TABLES:
         candidate = directory / name
         if not candidate.exists():
-            parts = None
+            complete = False
             break
         parts.append(f"{name}:{sha256_file(candidate)}")
 
-    source = hashlib.sha256("\n".join(parts).encode()).hexdigest() if parts else None
+    source = (
+        hashlib.sha256("\n".join(parts).encode()).hexdigest()
+        if complete and parts
+        else None
+    )
     return {"scored_table": scored, "source_tables": source}
 
 

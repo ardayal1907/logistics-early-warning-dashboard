@@ -89,7 +89,7 @@ def generate_data(argv: Sequence[str] | None = None) -> int:
     args = _base_parser("Generate the synthetic source dataset.").parse_args(argv)
     _configure_logging(args.log_level)
 
-    import generate_logistics_data  # noqa: PLC0415 - legacy module, imported lazily
+    import generate_logistics_data
 
     return _run("generate", generate_logistics_data.main)
 
@@ -98,7 +98,7 @@ def run_etl(argv: Sequence[str] | None = None) -> int:
     args = _base_parser("Build the star schema from the raw CSV.").parse_args(argv)
     _configure_logging(args.log_level)
 
-    import etl_star_schema  # noqa: PLC0415 - legacy module, imported lazily
+    import etl_star_schema
 
     return _run("etl", etl_star_schema.main)
 
@@ -107,8 +107,7 @@ def train_model(argv: Sequence[str] | None = None) -> int:
     args = _base_parser("Train, evaluate and persist the delay-risk model.").parse_args(argv)
     _configure_logging(args.log_level)
 
-    import ml_delay_risk_pipeline  # noqa: PLC0415 - legacy module, imported lazily
-
+    import ml_delay_risk_pipeline
     from logistics.infrastructure.fingerprint import write_checksum_sidecar
 
     settings = Settings.from_env(
@@ -142,7 +141,7 @@ def score_batch(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     _configure_logging(args.log_level)
 
-    import pandas as pd  # noqa: PLC0415 - heavy import, deferred to call time
+    import pandas as pd
 
     from logistics.infrastructure.fingerprint import write_csv_deterministically
     from logistics.services.scoring import build_scoring_service

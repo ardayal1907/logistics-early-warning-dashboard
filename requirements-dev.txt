@@ -6,6 +6,19 @@
 #   pip install -r requirements.txt -r requirements-dev.txt
 #   pytest tests/ -q
 
+# Versions mirror pyproject.toml [project.optional-dependencies].dev - that
+# table is the single source of truth. Keep the two in sync when bumping.
+
 -r requirements.txt
 
 pytest==9.1.1
+pytest-cov==7.0.0
+
+# Property-based tests in tests/test_logistics_domain.py. Was installed by hand
+# and never recorded here, so a clean checkout could not run the suite.
+hypothesis==6.165.2
+
+# Lint and type gates. Configured in pyproject.toml ([tool.ruff], [tool.mypy])
+# and enforced by .github/workflows/tests.yml.
+ruff==0.15.3
+mypy==1.19.1

@@ -8,8 +8,9 @@ If someone edits an emission factor in config.py without regenerating the data (
 worse, re-declares one somewhere else), both checks break.
 """
 
-import config
 import pytest
+
+import config
 
 NOISE_SIGMA = 0.03
 

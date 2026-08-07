@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   test:
-    name: pytest (Python 3.12)
+    name: lint + types + pytest (Python 3.12)
     runs-on: ubuntu-latest
 
     steps:
@@ -46,5 +46,28 @@ jobs:
           python --version
           pip list
 
-      - name: Run tests
-        run: pytest tests/ -q
+      # Lint and type checks run BEFORE the suite: they take seconds, and a
+      # failure there is a mechanical fix, so there is no value in waiting for
+      # pytest to finish first. Configuration for all three gates lives in
+      # pyproject.toml - the commands below deliberately take no flags, so that
+      # a local run and a CI run cannot drift apart.
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Type check (mypy)
+        run: mypy
+
+      # --cov with no argument uses [tool.coverage.run] source. The job fails if
+      # total coverage drops below [tool.coverage.report] fail_under.
+      - name: Run tests with coverage
+        run: pytest tests/ -q --cov --cov-report=term-missing --cov-report=xml
+
+      # Uploaded even when an earlier step failed, so a coverage regression can
+      # be inspected without re-running the job locally.
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: ignore

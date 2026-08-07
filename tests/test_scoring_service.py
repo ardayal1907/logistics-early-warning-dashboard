@@ -43,7 +43,7 @@ class FakePredictor:
         self.fixed = probability
         self.last_frame: pd.DataFrame | None = None
 
-    def predict_proba(self, X):  # noqa: N803 - sklearn's parameter name
+    def predict_proba(self, X):
         self.last_frame = X
         if self.fixed is not None:
             p = np.full(len(X), self.fixed)
@@ -176,7 +176,7 @@ def test_thresholds_come_from_the_artefact_not_from_module_defaults():
 
 def test_a_model_failure_surfaces_as_a_typed_error():
     class Broken:
-        def predict_proba(self, X):  # noqa: N803
+        def predict_proba(self, X):
             raise RuntimeError("estimator is not fitted")
 
     with pytest.raises(ScoringError, match="failed to score"):

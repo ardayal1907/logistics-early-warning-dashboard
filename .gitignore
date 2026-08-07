@@ -8,6 +8,7 @@ venv/
 # Test tooling
 .pytest_cache/
 .coverage
+coverage.xml
 htmlcov/
 
 # Model artefacts
