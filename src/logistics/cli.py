@@ -202,5 +202,88 @@ def score_batch(argv: Sequence[str] | None = None) -> int:
     return _run("score", _score)
 
 
+# ---------------------------------------------------------------------------
+# Optimisation - Phase 1, Block B only
+# ---------------------------------------------------------------------------
+def optimise(argv: Sequence[str] | None = None) -> int:
+    """Modal allocation: which vehicle type carries which shipment.
+
+    Block A (vendor assignment) is NOT implemented; this command decides
+    vehicles only, and no machine learning is involved in that decision.
+    """
+    parser = _base_parser("Optimise modal allocation (Phase 1, Block B).")
+    parser.add_argument("--epsilon-kg", type=float, default=None,
+                        help="CO2 ceiling in kg. Omit for pure cost minimisation.")
+    parser.add_argument("--frontier", type=int, default=0, metavar="N",
+                        help="Trace N points of the cost/CO2 Pareto frontier.")
+    parser.add_argument("--skip-guard", action="store_true",
+                        help="Skip the Vehicle_Type decision-invariance check. "
+                             "Only when no model artefact is available.")
+    parser.add_argument("-o", "--output", type=Path, default=None,
+                        help="Write the assignment plan to this CSV.")
+    args = parser.parse_args(argv)
+    _configure_logging(args.log_level)
+
+    import pandas as pd
+
+    from logistics.infrastructure.fingerprint import write_csv_deterministically
+    from logistics.optimization import modal
+    from logistics.optimization.guard import check_vehicle_invariance
+
+    settings = _settings_from(args)
+
+    def _optimise() -> None:
+        fact = pd.read_csv(settings.processed_dir / "Fact_Shipments.csv")
+        route = pd.read_csv(settings.processed_dir / "Dim_Route.csv")
+        shipments = fact.merge(route, on="Route_ID", how="left")
+
+        # docs/OPTIMIZATION.md §6: run this BEFORE trusting any plan. A solver
+        # mines every spurious signal in its objective to exhaustion.
+        if not args.skip_guard:
+            from logistics.services.scoring import build_scoring_service
+
+            vendor = pd.read_csv(settings.processed_dir / "Dim_Vendor.csv")
+            service = build_scoring_service(settings)
+            result = check_vehicle_invariance(
+                service, shipments.merge(vendor, on="Vendor_ID", how="left"))
+            logger.info("Decision-invariance guard: %s", result.describe())
+
+        baseline = modal.status_quo(shipments)
+        logger.info("Status quo: %.1f t CO2, $%.0f freight",
+                    baseline.co2_tons, baseline.freight_cost)
+
+        if args.frontier:
+            for point in modal.sweep_frontier(shipments, points=args.frontier):
+                shadow = (f"{point.shadow_price_per_ton:8.2f}"
+                          if point.shadow_price_per_ton is not None else "       -")
+                logger.info("epsilon %9.1f kg | CO2 %8.1f t | cost $%10.0f | "
+                            "shadow $%s/t",
+                            point.epsilon_kg, point.co2_kg / 1000.0,
+                            point.freight_cost, shadow)
+            return
+
+        plan = modal.optimise_modal_allocation(shipments, epsilon_kg=args.epsilon_kg)
+        logger.info("Optimised: %.1f t CO2 (%.1f%% vs status quo), $%.0f freight",
+                    plan.co2_tons,
+                    100.0 * (plan.co2_kg - baseline.co2_kg) / baseline.co2_kg,
+                    plan.freight_cost)
+        if plan.fractional_shipments:
+            logger.info("%d shipment(s) split across vehicles (expected: at most "
+                        "one, the emission ceiling breaks total unimodularity)",
+                        plan.fractional_shipments)
+        logger.warning(
+            "Vehicle assignment in this dataset is RANDOM (the generator draws "
+            "it independently of weight and distance). This figure measures that "
+            "randomness, not fleet inefficiency. Do not report it as a saving."
+        )
+
+        if args.output:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            write_csv_deterministically(plan.assignment, args.output)
+            logger.info("Wrote %s (%d rows)", args.output, len(plan.assignment))
+
+    return _run("optimise", _optimise)
+
+
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(score_batch())
