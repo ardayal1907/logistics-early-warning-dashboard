@@ -1,6 +1,6 @@
 {
   "model_name": "logistics_delay_risk",
-  "trained_at": "2026-08-04T10:47:32+03:00",
+  "trained_at": "2026-08-07T14:18:31+03:00",
   "feature_order": [
     "Distance_km",
     "Weight_tons",
@@ -39,8 +39,8 @@
   },
   "numeric_ranges": {
     "Distance_km": {
-      "min": 51.1,
-      "max": 1199.7
+      "min": 44.7,
+      "max": 1733.0
     },
     "Weight_tons": {
       "min": 1.01,
@@ -58,22 +58,22 @@
     "derivation": "p* = 1 / (1 + C_FN/C_FP); high_risk = the 1:1 ratio threshold"
   },
   "metrics": {
-    "oof_roc_auc": 0.7558,
-    "oof_brier": 0.1401,
-    "oof_ece": 0.0232,
-    "chronological_holdout_roc_auc": 0.7375,
-    "chronological_cv_roc_auc_mean": 0.7556,
-    "chronological_cv_roc_auc_std": 0.0499
+    "oof_roc_auc": 0.7424,
+    "oof_brier": 0.133,
+    "oof_ece": 0.0397,
+    "chronological_holdout_roc_auc": 0.7867,
+    "chronological_cv_roc_auc_mean": 0.7522,
+    "chronological_cv_roc_auc_std": 0.0362
   },
   "training_data": {
     "n_rows": 1500,
-    "positive_rate": 0.2153,
+    "positive_rate": 0.198,
     "date_min": "2025-08-01",
     "date_max": "2026-07-31",
     "is_synthetic": true
   },
-  "training_data_sha256": "b9feed16c185ef39ba231918325f2a83955a19d8dcb537e768f7ed835424406b",
-  "source_tables_sha256": "46c157c03b90d96e3307a0f48331261cad799e57bd9bc74229e5889714a6714e",
+  "training_data_sha256": "e83a7e0fada1451013a64c73f8a0919e0558700369cb92782b5b73d2b6690d1c",
+  "source_tables_sha256": "bd5090a0848605d637e20825b8111a3a6141d9ec3dca951d24712ba4d5ed3b73",
   "versions": {
     "python": "3.12.10",
     "scikit_learn": "1.9.0",

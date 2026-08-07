@@ -36,21 +36,16 @@ RISK_LEVELS = [r.value for r in RiskLevel]
 # violation is an order of magnitude larger.
 MAX_DISTANCE_CV = 0.15
 
-# TRANSITIONAL, and deliberately so.
-#
-#   RT-a1b2c3d4e5   content-addressed, what etl.route_key produces today
-#   RT-00001        positional, what the CSVs committed under data/ still hold
-#
-# The code was fixed in migration step 6; the DATA has not been regenerated,
-# because doing so rewrites Dim_Route.csv and Fact_Shipments.csv, breaks the
-# Route_ID foreign key in Fact_Shipments_with_ML.csv, and therefore requires
-# re-scoring and retraining. Drop the positional alternative the moment that
-# run happens - keeping both accepted forever would mean the contract cannot
-# tell a durable key from the defect it replaced.
-ROUTE_ID_PATTERN = r"^RT-([0-9a-f]{10}|\d{5})$"
+# Content-addressed keys, RT- plus the first 10 hex characters of sha1 over the
+# natural key. The transitional alternative that also accepted positional
+# RT-00001 keys is GONE: the pipeline has been re-run, data/processed/ carries
+# durable keys throughout, and keeping both forms accepted would have meant the
+# contract could no longer tell a durable key from the defect it replaced.
+ROUTE_ID_PATTERN = r"^RT-[0-9a-f]{10}$"
 
-# What new output must match. Nothing on disk is checked against this yet.
-DURABLE_ROUTE_ID_PATTERN = r"^RT-[0-9a-f]{10}$"
+# Kept as a distinct name because callers reference it; identical by definition
+# now that the transition is complete.
+DURABLE_ROUTE_ID_PATTERN = ROUTE_ID_PATTERN
 
 
 def _positive(name: str, maximum: float | None = None) -> Column:

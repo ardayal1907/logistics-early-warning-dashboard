@@ -12,8 +12,6 @@ silently different answer.
 
 from __future__ import annotations
 
-import re
-
 import pandas as pd
 import pytest
 
@@ -86,21 +84,17 @@ def test_field_boundaries_cannot_be_forged():
     assert etl.route_key("AB", "C") != etl.route_key("A", "BC")
 
 
-def test_the_committed_data_still_carries_the_legacy_keys(dim_route):
-    """Honest statement of where this change stops.
+def test_the_committed_data_now_carries_durable_keys(dim_route):
+    """The transition is complete: data/processed/ holds content-addressed keys.
 
-    The code produces durable keys; data/processed/ has not been regenerated,
-    because that rewrites Dim_Route.csv and Fact_Shipments.csv, breaks the
-    Route_ID foreign key in Fact_Shipments_with_ML.csv, and so requires
-    re-scoring and retraining.
-
-    When that run happens this test flips - which is the point. Delete it, and
-    tighten ROUTE_ID_PATTERN to DURABLE_ROUTE_ID_PATTERN at the same time.
+    This replaces the test that used to assert the OPPOSITE - that the committed
+    data still carried positional RT-00001 keys - which was correct for as long
+    as the pipeline had not been re-run. It has been, so every key on disk is
+    now sha1-derived and ROUTE_ID_PATTERN no longer accepts the positional form.
     """
-    legacy = dim_route["Route_ID"].str.fullmatch(r"RT-\d{5}")
-    assert legacy.all(), (
-        "data/processed/Dim_Route.csv no longer uses positional keys. If the "
-        "pipeline was re-run, remove this test and drop the positional branch "
-        "from contracts.shipments.ROUTE_ID_PATTERN."
+    assert dim_route["Route_ID"].str.fullmatch(DURABLE_ROUTE_ID_PATTERN).all(), (
+        "data/processed/Dim_Route.csv still contains positional keys; the ETL "
+        "was not re-run against this data."
     )
-    assert not re.fullmatch(DURABLE_ROUTE_ID_PATTERN, dim_route["Route_ID"].iloc[0])
+    assert not dim_route["Route_ID"].str.fullmatch(r"RT-\d{5}").any()
+    assert dim_route["Route_ID"].is_unique

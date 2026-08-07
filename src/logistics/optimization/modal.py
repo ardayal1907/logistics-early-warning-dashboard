@@ -34,7 +34,7 @@ import pandas as pd
 import pulp
 
 from logistics.domain.carbon import compute_co2_kg_many
-from logistics.domain.economics import freight_cost
+from logistics.domain.economics import DEFAULT_SLA_PENALTY_PER_DELAY, freight_cost
 from logistics.domain.enums import VehicleType
 from logistics.errors import LogisticsError
 
@@ -63,6 +63,9 @@ class ModalPlan:
     assignment: pd.DataFrame
     vehicle_counts: dict[str, float] = field(default_factory=dict)
     fractional_shipments: int = 0
+    # v2 only: expected number of late shipments under this plan, summed from
+    # the calibrated p_ik. None when the plan was solved without a risk panel.
+    expected_delays: float | None = None
 
     @property
     def co2_tons(self) -> float:
@@ -184,6 +187,8 @@ def optimise_modal_allocation(
     fleet_caps: dict[str, int] | None = None,
     emissions: pd.DataFrame | None = None,
     costs: pd.DataFrame | None = None,
+    risk_panel: pd.DataFrame | None = None,
+    sla_penalty: float = DEFAULT_SLA_PENALTY_PER_DELAY,
     co2_range: float | None = None,
     msg: bool = False,
 ) -> ModalPlan:
@@ -191,6 +196,17 @@ def optimise_modal_allocation(
 
     `epsilon_kg=None` means no ceiling: pure cost minimisation subject to the
     fleet caps, which is the left-hand end of the frontier.
+
+    `risk_panel` turns this into the v2 formulation. Without it the objective is
+    freight cost alone and the plan implicitly assumes the modal choice does not
+    move delay risk - the assumption v1's guard had to police. With it, the
+    decision variable carries an expected SLA cost per (shipment, vehicle):
+
+        min  sum_ik [ freight_ik + sla_penalty * p_ik ] * y_ik
+
+    where p_ik comes from `calibration.calibrated_risk_panel`. The optimiser can
+    then trade a cheaper vehicle against a likelier delay explicitly, on measured
+    probabilities, instead of being forbidden from noticing the trade exists.
     """
     e = emissions if emissions is not None else build_emission_panel(shipments)
     f = costs if costs is not None else build_cost_panel(shipments)
@@ -199,6 +215,18 @@ def optimise_modal_allocation(
     n = len(shipments)
     ids = shipments["Shipment_ID"].to_numpy()
 
+    r = None
+    if risk_panel is not None:
+        # Align to the shipment order the panels use; a silent reindex mismatch
+        # here would attach one shipment's risk to another's decision.
+        r = risk_panel.reindex(ids)
+        if r.isna().to_numpy().any():
+            missing = int(r.isna().any(axis=1).sum())
+            raise InfeasiblePlanError(
+                f"risk_panel is missing {missing} of {n} shipments. Every shipment "
+                f"needs a calibrated probability for every vehicle type."
+            )
+
     problem = pulp.LpProblem("modal_allocation", pulp.LpMinimize)
     z = {
         (i, k): pulp.LpVariable(f"z_{i}_{k}", lowBound=0, upBound=1)
@@ -206,7 +234,13 @@ def optimise_modal_allocation(
         for k in FLEET
     }
 
-    cost_term = pulp.lpSum(float(f.iloc[i][k]) * z[(i, k)] for i in range(n) for k in FLEET)
+    def unit_cost(i: int, k: str) -> float:
+        freight = float(f.iloc[i][k])
+        if r is None:
+            return freight
+        return freight + sla_penalty * float(r.iloc[i][k])
+
+    cost_term = pulp.lpSum(unit_cost(i, k) * z[(i, k)] for i in range(n) for k in FLEET)
 
     if epsilon_kg is None:
         problem += cost_term
@@ -238,6 +272,7 @@ def optimise_modal_allocation(
         )
 
     rows, total_co2, total_cost, fractional = [], 0.0, 0.0, 0
+    expected_delays = 0.0
     for i in range(n):
         shares = {k: float(z[(i, k)].value() or 0.0) for k in FLEET}
         if max(shares.values()) < 1 - 1e-6:
@@ -246,7 +281,12 @@ def optimise_modal_allocation(
             if share > 1e-9:
                 rows.append({"Shipment_ID": ids[i], "Vehicle_Type": k, "share": share})
                 total_co2 += float(e.iloc[i][k]) * share
+                # freight_cost stays FREIGHT. The SLA term steers the decision but
+                # reporting it inside freight would make v1 and v2 plans
+                # incomparable on the axis the frontier is drawn in.
                 total_cost += float(f.iloc[i][k]) * share
+                if r is not None:
+                    expected_delays += float(r.iloc[i][k]) * share
 
     assignment = pd.DataFrame(rows)
     shadow = None
@@ -266,6 +306,7 @@ def optimise_modal_allocation(
         assignment=assignment,
         vehicle_counts=assignment.groupby("Vehicle_Type")["share"].sum().to_dict(),
         fractional_shipments=fractional,
+        expected_delays=expected_delays if r is not None else None,
     )
 
 

@@ -69,6 +69,44 @@ CITIES = [
     "Malatya", "Erzurum", "Van"
 ]
 
+# Approximate city-centre coordinates (WGS84). These exist so that Distance_km
+# can be a FUNCTION OF THE CITY PAIR instead of an independent draw. The v1
+# generator drew distance from uniform(50, 1200) with no reference to origin or
+# destination, so the same pair carried wildly different distances - Istanbul ->
+# Denizli ranged from 67.9 km to 1,169.2 km across six shipments. A star schema
+# whose Dim_Route cannot answer "how far is this route" is not a route dimension.
+CITY_COORDS = {
+    "Istanbul":   (41.01, 28.98),
+    "Ankara":     (39.93, 32.86),
+    "Izmir":      (38.42, 27.14),
+    "Bursa":      (40.19, 29.06),
+    "Antalya":    (36.90, 30.71),
+    "Gaziantep":  (37.07, 37.38),
+    "Konya":      (37.87, 32.48),
+    "Adana":      (37.00, 35.32),
+    "Mersin":     (36.81, 34.64),
+    "Kayseri":    (38.73, 35.49),
+    "Samsun":     (41.29, 36.33),
+    "Kocaeli":    (40.77, 29.94),
+    "Trabzon":    (41.00, 39.72),
+    "Denizli":    (37.78, 29.09),
+    "Eskisehir":  (39.78, 30.52),
+    "Sakarya":    (40.76, 30.38),
+    "Diyarbakir": (37.91, 40.24),
+    "Malatya":    (38.35, 38.31),
+    "Erzurum":    (39.90, 41.27),
+    "Van":        (38.49, 43.38),
+}
+
+# Great-circle distance understates what a lorry drives. 1.25 is the standard
+# road-detour factor for a country with this topography; it puts Istanbul -> Van
+# at ~1,590 km against a real road distance of roughly 1,650 km.
+ROAD_DETOUR_FACTOR = 1.25
+
+# Per-shipment variation around the route's base distance: depot pick-up legs,
+# diversions, roadworks. The roadmap specified +/-5%.
+DISTANCE_NOISE_PCT = 0.05
+
 VENDOR_COUNT = 25
 VENDOR_IDS = [f"VEND-{str(i).zfill(3)}" for i in range(1, VENDOR_COUNT + 1)]
 
@@ -123,7 +161,44 @@ TRAFFIC_LEVELS = ["Low", "Medium", "High"]
 TRAFFIC_PROBS = [0.35, 0.40, 0.25]
 
 VEHICLE_TYPES = ["Diesel Truck", "Electric Semi", "Hybrid Van"]
+# Fleet-wide marginal the assignment is calibrated to reproduce. In v1 this was
+# fed straight to rng.choice, so Vehicle_Type was independent of every other
+# column - the W3 finding. An operator does not dispatch at random, and a
+# generator that says they do makes every abatement figure a measure of its own
+# noise rather than of fleet inefficiency.
 VEHICLE_PROBS = [0.55, 0.20, 0.25]  # the fleet is still mostly diesel
+
+# --- Vehicle assignment (v2) ------------------------------------------------
+# Utilities in a softmax, deliberately MILD. Two constraints pull against each
+# other here:
+#   * too weak and the column is noise again, which is what v1 got wrong;
+#   * too strong and Vehicle_Type becomes a proxy for Distance_km and
+#     Weight_tons, which are already model features. The optimiser would then
+#     read "switch to Electric Semi" as "make the shipment shorter", which is
+#     not a decision anyone can take.
+# MEASURED with these coefficients on the shipped seed: the diesel share runs
+# 48.0% on the shortest distance quartile to 70.9% on the longest, and the
+# marginal lands at 56.5/19.1/24.3 against the 55/20/25 target. A real dispatcher
+# is at least this predictable; the longest lane is still not 100% diesel, so the
+# column carries information without becoming a deterministic restatement of
+# Distance_km. Per-vendor diesel share spans 0.25 to 0.75 (sd 0.14).
+#
+# Vehicle_Type still has NO causal effect on delay - build_delays does not read
+# it. The correlation created here is operational (who dispatches what), not
+# causal, which is exactly the structure a modal-allocation optimiser needs.
+VEHICLE_BASE_UTILITY = {"Diesel Truck": 0.72, "Electric Semi": -0.42, "Hybrid Van": -0.18}
+
+# Long haul favours diesel; battery range still rules the electric semi out of
+# the longest lanes, and a van is not a long-distance vehicle.
+VEHICLE_DISTANCE_COEF = {"Diesel Truck": 0.45, "Electric Semi": -0.25, "Hybrid Van": -0.70}
+
+# Heavy loads favour the two trucks over the van.
+VEHICLE_WEIGHT_COEF = {"Diesel Truck": 0.35, "Electric Semi": 0.30, "Hybrid Van": -1.00}
+
+# Per-vendor fleet character: some operators have invested in electrification,
+# others have not. Drawn once per vendor, so a vendor is consistent across its
+# shipments the way a real fleet would be.
+VENDOR_FLEET_BIAS_SD = 0.45
 
 # --- Delay model ------------------------------------------------------------
 MAX_DELAY_DAYS = 5
@@ -134,7 +209,13 @@ TRAFFIC_LOGIT = {"Low": 0.00, "Medium": 0.50, "High": 1.20}
 
 VENDOR_PIVOT = 3.25               # mean vendor rating -> centring point
 VENDOR_SLOPE = 0.80
-DISTANCE_PIVOT = 625.0
+# Centring point and span for the distance term. Both follow from the distance
+# matrix rather than the old uniform(50, 1200) draw: the mean over all 380 ordered
+# city pairs is 694 km and the widest is Istanbul <-> Van at 1,765 km. Keeping the
+# old 625 / 1200 would have left the term off-centre and over-scaled, which
+# solve_intercept would have masked at the mean while distorting the spread.
+DISTANCE_PIVOT = 694.0
+DISTANCE_SCALE_KM = 1800.0
 DISTANCE_SLOPE = 0.50
 
 # Weather x Vendor INTERACTION.
@@ -159,6 +240,37 @@ SEVERITY_BASE = 0.30
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in kilometres. Consumes no randomness."""
+    radius = 6371.0088
+    p1, p2 = np.radians(lat1), np.radians(lat2)
+    dphi = p2 - p1
+    dlambda = np.radians(lon2 - lon1)
+    a = np.sin(dphi / 2) ** 2 + np.cos(p1) * np.cos(p2) * np.sin(dlambda / 2) ** 2
+    return float(2 * radius * np.arcsin(np.sqrt(a)))
+
+
+def build_distance_matrix() -> dict[tuple[str, str], float]:
+    """Road distance for every ordered city pair, derived once from CITY_COORDS.
+
+    Symmetric by construction and independent of the RNG, so the same pair always
+    resolves to the same base distance no matter which shipment asks. This is the
+    fix for the distance rule: `test_distance_is_a_function_of_the_city_pair`.
+    """
+    matrix: dict[tuple[str, str], float] = {}
+    for a, (lat1, lon1) in CITY_COORDS.items():
+        for b, (lat2, lon2) in CITY_COORDS.items():
+            if a == b:
+                continue
+            matrix[(a, b)] = round(
+                haversine_km(lat1, lon1, lat2, lon2) * ROAD_DETOUR_FACTOR, 1
+            )
+    return matrix
+
+
+ROUTE_DISTANCE_KM = build_distance_matrix()
+
+
 def solve_intercept(linear, target, lo=-8.0, hi=4.0, iters=90):
     """Binary-search the constant that makes E[sigmoid(linear + c)] = target.
 
@@ -201,6 +313,49 @@ def truncated_poisson_days(lam_vec, max_days, generator):
 # ---------------------------------------------------------------------------
 # 2) Generating the base columns
 # ---------------------------------------------------------------------------
+def assign_vehicles(rng, distance_km, weight_tons, vendor_ids, vendor_fleet_bias):
+    """Dispatch a vehicle type per shipment from route, load and vendor fleet.
+
+    A softmax over three utilities. Distance and weight are standardised to
+    roughly [-1, 1] over their observed span so the coefficients read as "logit
+    swing across the full range" rather than "per kilometre".
+
+    Returns a str array. Consumes exactly one uniform draw per row, after the
+    per-vendor bias has been drawn by the caller - the draw order is load-bearing
+    for reproducibility (see the module docstring).
+    """
+    n_rows = len(distance_km)
+
+    # Standardise: 694 km and 13 t are the respective centres, and the divisors
+    # are half the span, so a full-range move is about +/-1.
+    d_std = (np.asarray(distance_km, dtype=float) - DISTANCE_PIVOT) / 900.0
+    w_std = (np.asarray(weight_tons, dtype=float) - 13.0) / 12.0
+
+    base = np.array([VEHICLE_BASE_UTILITY[v] for v in VEHICLE_TYPES])
+    d_coef = np.array([VEHICLE_DISTANCE_COEF[v] for v in VEHICLE_TYPES])
+    w_coef = np.array([VEHICLE_WEIGHT_COEF[v] for v in VEHICLE_TYPES])
+
+    bias = np.array([vendor_fleet_bias[vid] for vid in vendor_ids])   # (n, 3)
+
+    utility = (
+        base[None, :]
+        + np.outer(d_std, d_coef)
+        + np.outer(w_std, w_coef)
+        + bias
+    )
+
+    utility -= utility.max(axis=1, keepdims=True)      # softmax overflow guard
+    probs = np.exp(utility)
+    probs /= probs.sum(axis=1, keepdims=True)
+
+    # One uniform per row, turned into a categorical pick by inverse CDF. Doing
+    # it this way rather than looping rng.choice keeps the randomness consumption
+    # a single vectorised draw, which is what makes the dataset reproducible.
+    draws = rng.random(n_rows)
+    picks = (probs.cumsum(axis=1) < draws[:, None]).sum(axis=1).clip(0, len(VEHICLE_TYPES) - 1)
+    return np.array(VEHICLE_TYPES, dtype=object)[picks].astype(str)
+
+
 def build_base_columns(rng, n_rows: int = N_ROWS) -> dict:
     """Vendors, cities, distances, weights, dates, weather, traffic, vehicles.
 
@@ -225,7 +380,15 @@ def build_base_columns(rng, n_rows: int = N_ROWS) -> dict:
         rng.choice([c for c in CITIES if c != o]) for o in origins
     ])
 
-    distance_km = rng.uniform(50, 1200, size=n_rows).round(1)
+    # Distance is a property of the ROUTE, not of the shipment. The base comes
+    # from the city-pair matrix; the per-shipment noise is pick-up legs and
+    # diversions, not a fresh draw of "how far apart are these two cities".
+    base_distance = np.array([ROUTE_DISTANCE_KM[(o, d)]
+                              for o, d in zip(origins, destinations, strict=True)])
+    distance_noise = rng.uniform(1.0 - DISTANCE_NOISE_PCT, 1.0 + DISTANCE_NOISE_PCT,
+                                 size=n_rows)
+    distance_km = (base_distance * distance_noise).round(1)
+
     weight_tons = rng.uniform(1, 25, size=n_rows).round(2)
 
     # Shipment_Date - spread over the last 12 months with seasonal volume
@@ -249,9 +412,17 @@ def build_base_columns(rng, n_rows: int = N_ROWS) -> dict:
                                        p=probs)
     weather = weather.astype(str)
 
-    # Traffic and vehicle type are NOT seasonal - the scope is kept deliberately narrow.
+    # Traffic is NOT seasonal - the scope is kept deliberately narrow.
     traffic = rng.choice(TRAFFIC_LEVELS, size=n_rows, p=TRAFFIC_PROBS)
-    vehicle = rng.choice(VEHICLE_TYPES, size=n_rows, p=VEHICLE_PROBS)
+
+    # Vehicle type is DISPATCHED, not drawn (v2). See the block comment above
+    # VEHICLE_BASE_UTILITY for why the coefficients are deliberately mild.
+    vendor_fleet_bias = {
+        vid: rng.normal(0, VENDOR_FLEET_BIAS_SD, size=len(VEHICLE_TYPES))
+        for vid in VENDOR_IDS
+    }
+    vehicle = assign_vehicles(rng, distance_km, weight_tons, vendor_ids,
+                              vendor_fleet_bias)
 
     return {
         "shipment_ids": shipment_ids,
@@ -293,7 +464,7 @@ def build_delays(rng, cols: dict) -> tuple:
         np.array([WEATHER_LOGIT[w] for w in weather])
         + np.array([TRAFFIC_LOGIT[t] for t in traffic])
         + vendor_effect * amp
-        + ((distance_km - DISTANCE_PIVOT) / 1200.0) * DISTANCE_SLOPE
+        + ((distance_km - DISTANCE_PIVOT) / DISTANCE_SCALE_KM) * DISTANCE_SLOPE
     )
 
     intercept = solve_intercept(logit_wo_intercept, TARGET_DELAY_RATE)

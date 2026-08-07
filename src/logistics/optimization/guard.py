@@ -129,10 +129,60 @@ def check_vehicle_invariance(
     return result
 
 
+def check_calibrated_vehicle_effect(
+    risk_panel: pd.DataFrame,
+    *,
+    threshold: float = MAX_VEHICLE_LEAK,
+    raise_on_failure: bool = True,
+) -> DecisionInvarianceResult:
+    """The v2 guard: same bound, applied to MEASURED per-vehicle probabilities.
+
+    v1 asked whether the raw model was invariant to Vehicle_Type and refused when
+    it was not - correctly, because the raw counterfactual scores are noise (see
+    calibration.py). v2 does not need that invariance: it builds p_ik from a
+    shared-slope calibration where the vehicle can only shift the level by a
+    measured amount, so a surviving spread is an OBSERVED difference in delay
+    rates rather than an artefact of asking a forest an out-of-distribution
+    question.
+
+    The bound stays at 0.05 and the statistic stays the worst per-shipment range.
+    What changed is what is being bounded. If this fails, the fleet really does
+    differ enough that modal allocation and delay risk cannot be separated, and
+    Block B's decomposition is genuinely unsafe - which is the thing the original
+    guard was reaching for.
+
+    `risk_panel` is `calibration.calibrated_risk_panel`'s output: rows indexed by
+    Shipment_ID, one column per vehicle type.
+    """
+    spread = risk_panel.max(axis=1) - risk_panel.min(axis=1)
+    leak = float(spread.max()) if len(spread) else 0.0
+
+    result = DecisionInvarianceResult(
+        leak=leak,
+        threshold=threshold,
+        n_shipments=len(risk_panel),
+        worst_shipment_id=str(spread.idxmax()) if len(spread) else None,
+        per_vehicle_mean={str(k): float(risk_panel[k].mean()) for k in risk_panel.columns},
+    )
+
+    logger.info("calibrated (v2) %s", result.describe())
+    if not result.passed and raise_on_failure:
+        raise DecisionInvarianceError(
+            f"Even after per-vehicle calibration, Vehicle_Type moves the delay "
+            f"probability by {leak:.4f} >= {threshold} on the worst shipment. That "
+            f"is a measured difference in observed delay rates, not model noise, so "
+            f"modal allocation cannot be separated from risk. Reformulating will not "
+            f"help; the fleet composition itself has to enter the risk model. "
+            f"See docs/OPTIMIZATION.md §6 (v2)."
+        )
+    return result
+
+
 __all__ = [
     "MAX_VEHICLE_LEAK",
     "DecisionInvarianceError",
     "DecisionInvarianceResult",
     "build_counterfactual_grid",
+    "check_calibrated_vehicle_effect",
     "check_vehicle_invariance",
 ]
