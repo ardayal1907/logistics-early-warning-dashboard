@@ -181,10 +181,17 @@ def test_shipped_dataset_has_the_expected_delay_rate(raw_data):
     the documented design. This catches that.
     """
     rate = (raw_data.Actual_Delay_Days > 0).mean()
-    assert rate == pytest.approx(0.215, abs=0.01), (
-        f"The committed dataset has a {rate:.1%} delay rate; the documented design "
-        "is ~22%. Either the generator changed without the data being regenerated, "
-        "or the data was regenerated with different settings."
+    # The DESIGN target is unchanged at TARGET_DELAY_RATE = 0.22, and
+    # solve_intercept still hits it exactly: measured E[p] = 0.2200 on the
+    # shipped seed. The realised Bernoulli draw is 0.198, which is -2.06 sigma
+    # on 1,500 rows (sd 0.0107) - ordinary sampling noise, not a design change.
+    # Pinning the realised rate rather than the target is what makes this test
+    # able to catch "generator edited, data not regenerated".
+    assert rate == pytest.approx(0.198, abs=0.01), (
+        f"The committed dataset has a {rate:.1%} delay rate; the v2 regeneration "
+        "produced 19.8% against a 22% design target. Either the generator changed "
+        "without the data being regenerated, or it was regenerated with different "
+        "settings."
     )
 
 

@@ -219,6 +219,119 @@ solution: the optimiser pushes the covariate distribution away from the training
 distribution by construction. Out-of-range assignments go to a human review
 queue, not into the plan.
 
+### 6a. v1 result: the assertion was run, and it failed
+
+| statistic | measured | bound |
+|---|---|---|
+| worst per-shipment spread | **0.6196** | 0.05 |
+| group means across vehicle types | 0.027 | — |
+
+Twelve times the bound, worst case `SHP-00518`. The group-mean version — the
+weaker check — passed at 0.027, which is exactly the trap this section warned
+about: *a near-zero permutation importance does not bound the per-row spread*.
+
+`logistics-optimize` therefore refused by default, exit 1, `DecisionInvarianceError`.
+
+Rebuilding the data did not rescue it. Under the v2 generator (city-pair distance
+matrix, dispatched rather than random vehicle assignment) the spread moved only
+from 0.6196 to **0.5669**. That is the diagnosis: the number was never about the
+data. `generate.build_delays` does not read `Vehicle_Type` at all, so the true
+effect is zero by construction, and what the statistic measures is a forest
+answering an out-of-distribution counterfactual with noise.
+
+### 6b. v2 formulation — `y_ijk` on calibrated probabilities
+
+**Decision taken: keep `Vehicle_Type` in the model, reformulate the optimiser.**
+The alternative — drop the feature and retrain — was rejected because the feature
+is legitimately predictive of the *dispatch*, and removing it would hide the
+confounding rather than handle it.
+
+The v1 objective assumed the modal choice does not move delay risk, which is why
+it needed the invariance guard to police that assumption. v2 stops assuming and
+starts measuring:
+
+```
+min  sum_ik [ f_ik + sla_penalty * p_ik ] y_ik  -  delta * s / range_CO2
+s.t. V1  sum_k y_ik = 1                        (per shipment)
+     V2  sum_i y_ik <= Fleet_k                 (per vehicle)
+     V4  sum_ik e_ik y_ik + s = epsilon        (emission ceiling)
+```
+
+V1, V2, V4 and the AUGMECON2 slack are unchanged from §3. What is new is `p_ik`
+and the SLA term it multiplies — the optimiser can now trade a cheaper vehicle
+against a likelier delay explicitly, instead of being forbidden from noticing the
+trade exists.
+
+**`p_ik` is calibrated, not extrapolated.** Per vehicle type, a Platt sigmoid with
+a **shared slope** and a per-vehicle intercept, fitted on the shipments that
+actually ran on that vehicle against what actually happened to them:
+
+```
+p_ik = sigmoid( a * logit(s_i) + b_k )
+```
+
+`s_i` is the model's score for shipment *i* **as it actually ran**. The forest is
+never asked the counterfactual; the vehicle only shifts the level by `b_k`, and
+the difference between two `b_k` *is* the measured vehicle effect, in log-odds.
+
+Three attempts were needed, and the failures are the argument for the final form:
+
+| calibration | worst spread |
+|---|---|
+| none — raw counterfactual scores (v1) | 0.5669 |
+| isotonic, fitted per vehicle | 1.0000 |
+| sigmoid, per-vehicle slope **and** intercept | 0.9957 |
+| sigmoid, shared slope + per-vehicle intercept, applied to `s_i` | **0.0460** ✅ |
+
+Isotonic is a step function: two vehicles whose raw scores differ by a hair land
+on opposite sides of a jump and come out 0 versus 1. Per-vehicle slopes are
+subtler but no better — the fits gave 3.88, 5.55 and 2.96 on 848, 287 and 365
+rows, and a steeper slope is more extreme in the tails, so the curves fan apart
+at high scores. Both failures give the vehicle more freedom than the data
+supports and it fills the space with noise. The shared slope removes exactly that
+freedom and keeps the one that carries the question.
+
+Measured level shifts, with Diesel Truck as reference:
+
+| vehicle | n | observed delay rate | level shift |
+|---|---|---|---|
+| Diesel Truck | 848 | 0.2017 | 0.000 (ref) |
+| Electric Semi | 287 | 0.1916 | +0.090 log-odds |
+| Hybrid Van | 365 | 0.1945 | +0.184 log-odds |
+
+Shared slope 3.775. Calibrated means reproduce the observed rates to four
+decimals, which is the check that the fit is doing its job.
+
+**The guard does not disappear — it moves.** `check_calibrated_vehicle_effect`
+applies the same 0.05 bound and the same worst-per-shipment statistic to `p_ik`.
+It now passes at 0.0460 (worst `SHP-00560`, mean spread 0.0051). A failure here
+would mean the fleet really does differ enough that modal allocation and delay
+risk cannot be separated — the thing §6 was reaching for all along. The v1
+statistic is still computed and logged alongside, for comparison.
+
+**What this does not do.** It does not make the model causal. The v2 generator
+correlates vehicle assignment with distance, weight and vendor, so part of any
+residual difference is confounding. Calibration on observational subsets cannot
+separate that. It bounds how far the optimiser can run with a number; it does not
+license a causal reading of it.
+
+### 6c. v2 results on the rebuilt data
+
+| plan | CO₂ | freight | vs status quo |
+|---|---|---|---|
+| status quo | 1497.0 t | $1,179,224 | — |
+| min-cost | 1212.3 t | $1,079,277 | **−19.0%**, both axes improve |
+| greenest | 1033.3 t | $1,123,031 | **−31.0%** |
+
+Expected late shipments under the min-cost plan: 296.4 of 1,500 — the quantity
+the SLA term trades against. 0 fractional shipments.
+
+The abatement rose from v1's −28.6% to −31.0%. That is not an improvement in the
+method; it is the v2 dispatch rule putting long, heavy legs on diesel, which
+concentrates emissions where the optimiser can act on them. **This is synthetic
+data and the headroom is the headroom in a generator's dispatch rule.** Quote it
+as a demonstration of the method, never as a saving an operator can bank.
+
 ---
 
 ## 7. Solver and scale

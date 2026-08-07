@@ -79,22 +79,14 @@ def test_the_distance_rule_accepts_a_consistent_dataset():
     assert contracts.validate_distance_consistency(consistent).empty
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "KNOWN DEFECT, not a flaky test. generate.build_base_columns draws "
-        "Distance_km independently of the (Origin, Destination) pair, so the "
-        "same city pair carries wildly different distances. This is expected to "
-        "fail until the generator uses a 20x20 distance matrix with +/-5% noise. "
-        "strict=True: when that lands, this turns RED so the marker cannot be "
-        "left behind."
-    ),
-)
 def test_distance_is_a_function_of_the_city_pair(raw_data):
     """Distance between two cities does not depend on which shipment you look at.
 
-    Deliberately left failing. Forcing it green - by widening the bound or
-    deleting the rule - would hide the defect it exists to name.
+    Was xfail(strict=True) for the whole refactor series: the v1 generator drew
+    Distance_km from uniform(50, 1200) with no reference to the city pair, and
+    328 of 347 pairs breached the bound. The v2 generator derives the base
+    distance from CITY_COORDS through ROUTE_DISTANCE_KM and applies only +/-5%
+    per-shipment noise, so the rule now holds and the marker is gone.
     """
     contracts.validate_distance_consistency(raw_data)
 
@@ -110,11 +102,20 @@ def test_the_scale_of_the_distance_defect_is_what_we_think_it_is(raw_data):
     violations = report[report["cv"] > contracts.MAX_DISTANCE_CV]
 
     assert len(report) == 347, "number of city pairs with more than one shipment"
-    assert len(violations) == 328, "city pairs whose distance spread is inconsistent"
+    assert len(violations) == 0, "city pairs whose distance spread is inconsistent"
 
+    # The residual spread is the +/-5% dispatch noise and nothing else. A uniform
+    # +/-5% band has cv ~ 0.029 in expectation, and small groups scatter around
+    # that, so 0.06 is a ceiling on noise rather than a restatement of the 0.15
+    # contract bound - it would catch a regression long before the contract does.
+    assert report["cv"].max() < 0.06, "residual spread is wider than dispatch noise"
+    assert report["cv"].median() == pytest.approx(0.0265, abs=0.005)
+
+    # The pair the v1 defect was reported on: 67.9 km to 1,169.2 km across six
+    # shipments of the same lane. The matrix puts the lane at 449.1 km.
     istanbul_denizli = report[
         (report["Origin"] == "Istanbul") & (report["Destination"] == "Denizli")
     ].iloc[0]
     assert int(istanbul_denizli["n"]) == 6
-    assert istanbul_denizli["min_km"] == pytest.approx(67.9)
-    assert istanbul_denizli["max_km"] == pytest.approx(1169.2)
+    assert istanbul_denizli["min_km"] == pytest.approx(427.3)
+    assert istanbul_denizli["max_km"] == pytest.approx(470.4)

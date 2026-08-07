@@ -237,16 +237,36 @@ def optimise(argv: Sequence[str] | None = None) -> int:
         route = pd.read_csv(settings.processed_dir / "Dim_Route.csv")
         shipments = fact.merge(route, on="Route_ID", how="left")
 
-        # docs/OPTIMIZATION.md §6: run this BEFORE trusting any plan. A solver
-        # mines every spurious signal in its objective to exhaustion.
+        # docs/OPTIMIZATION.md §6 (v2): build the calibrated risk panel, guard on
+        # IT, and hand it to the solver. A solver mines every spurious signal in
+        # its objective to exhaustion, so what it is allowed to see matters more
+        # than what it is forbidden from concluding.
+        risk_panel = None
         if not args.skip_guard:
+            from logistics.optimization.calibration import (
+                calibrated_risk_panel,
+                fit_vehicle_calibrations,
+            )
+            from logistics.optimization.guard import check_calibrated_vehicle_effect
             from logistics.services.scoring import build_scoring_service
 
             vendor = pd.read_csv(settings.processed_dir / "Dim_Vendor.csv")
             service = build_scoring_service(settings)
-            result = check_vehicle_invariance(
-                service, shipments.merge(vendor, on="Vendor_ID", how="left"))
-            logger.info("Decision-invariance guard: %s", result.describe())
+            featured = shipments.merge(vendor, on="Vendor_ID", how="left")
+
+            observed = service.score_frame(featured)
+            observed["Actual_Delay_Days"] = featured["Actual_Delay_Days"].to_numpy()
+            observed["Vehicle_Type"] = featured["Vehicle_Type"].to_numpy()
+
+            calibrations = fit_vehicle_calibrations(observed)
+            risk_panel = calibrated_risk_panel(observed, calibrations)
+
+            result = check_calibrated_vehicle_effect(risk_panel)
+            logger.info("Decision-invariance guard (v2, calibrated): %s",
+                        result.describe())
+
+            raw = check_vehicle_invariance(service, featured, raise_on_failure=False)
+            logger.info("For comparison, the raw v1 statistic: %s", raw.describe())
 
         baseline = modal.status_quo(shipments)
         logger.info("Status quo: %.1f t CO2, $%.0f freight",
@@ -262,19 +282,27 @@ def optimise(argv: Sequence[str] | None = None) -> int:
                             point.freight_cost, shadow)
             return
 
-        plan = modal.optimise_modal_allocation(shipments, epsilon_kg=args.epsilon_kg)
+        plan = modal.optimise_modal_allocation(
+            shipments, epsilon_kg=args.epsilon_kg, risk_panel=risk_panel)
         logger.info("Optimised: %.1f t CO2 (%.1f%% vs status quo), $%.0f freight",
                     plan.co2_tons,
                     100.0 * (plan.co2_kg - baseline.co2_kg) / baseline.co2_kg,
                     plan.freight_cost)
+        if plan.expected_delays is not None:
+            logger.info("Expected late shipments under this plan: %.1f of %d "
+                        "(the SLA term the v2 objective is trading against)",
+                        plan.expected_delays, len(shipments))
         if plan.fractional_shipments:
             logger.info("%d shipment(s) split across vehicles (expected: at most "
                         "one, the emission ceiling breaks total unimodularity)",
                         plan.fractional_shipments)
         logger.warning(
-            "Vehicle assignment in this dataset is RANDOM (the generator draws "
-            "it independently of weight and distance). This figure measures that "
-            "randomness, not fleet inefficiency. Do not report it as a saving."
+            "This is SYNTHETIC data. Vehicle assignment is now dispatched from "
+            "distance, weight and vendor fleet mix rather than drawn at random "
+            "(v2 generator), so the headroom is no longer pure noise - but it is "
+            "still the headroom in a generator's dispatch rule, not in a real "
+            "fleet. Quote it as a demonstration of the method, never as a saving "
+            "an operator can bank."
         )
 
         if args.output:
