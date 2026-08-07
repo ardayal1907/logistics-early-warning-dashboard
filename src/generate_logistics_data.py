@@ -33,22 +33,25 @@ Poisson). Target delay rate ~22%.
 Importing this module has no side effects: nothing runs until main() is called.
 """
 
-import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+# The carbon model lives in one place only - see src/config.py, which now
+# re-exports it from logistics.domain.carbon.
+from config import (
+    BASE_EMISSION,
+    EMISSION_FACTOR,
+    MIN_CO2_KG,
+    TRAFFIC_CO2_MULT,
+    WEATHER_CO2_MULT,
+)
+
 # Paths resolve relative to the repository root, so it does not matter which
 # directory you invoke the script from.
 ROOT = Path(__file__).resolve().parent.parent
 RAW_DIR = ROOT / "data" / "raw"
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-# The carbon model lives in one place only - see src/config.py.
-from config import (  # noqa: E402
-    EMISSION_FACTOR, BASE_EMISSION, WEATHER_CO2_MULT, TRAFFIC_CO2_MULT, MIN_CO2_KG,
-)
 
 # Fixed seed for reproducibility
 RNG_SEED = 42

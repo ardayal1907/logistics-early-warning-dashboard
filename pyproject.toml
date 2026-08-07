@@ -120,16 +120,22 @@ extend-exclude = ["notebooks"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
-# The legacy flat modules carry `# noqa: E402` because they import after a
-# sys.path.insert. They are excluded rather than rewritten in this step; the
-# noqa comments disappear together with the sys.path hacks in migration step 2.
-exclude = ["src/app.py", "src/config.py", "src/etl_star_schema.py",
-           "src/generate_logistics_data.py", "src/ml_delay_risk_pipeline.py"]
+# The exclude list is empty as of migration step 2: the sys.path.insert hacks
+# and the `# noqa: E402` comments that forced it are gone, so the legacy flat
+# modules lint like everything else.
 
 [tool.ruff.lint.per-file-ignores]
 # Turkish assertion messages contain 'ı' (U+0131), which RUF001 flags as a
 # homoglyph for ASCII 'i'. The text is deliberate and user-facing.
 "leakage_test.py" = ["RUF001"]
+
+# User-facing display copy. RUF001: '×', 'ℹ' and '–' are typographic characters
+# chosen on purpose, not homoglyph mistakes. E501: the long lines are Markdown
+# table rows and st.caption strings whose rendered output would change if they
+# were wrapped. Applies to the Streamlit entrypoint and the UI package it moves
+# into in migration step 3.
+"src/app.py" = ["RUF001", "E501"]
+"src/logistics/ui/*.py" = ["RUF001", "E501"]
 
 # ---------------------------------------------------------------------------
 # mypy - strict on the new package only, so the gate is green from day one and

@@ -1,21 +1,21 @@
-"""Shared pytest fixtures and path setup.
+"""Shared pytest fixtures and data-artefact guards.
 
-`src/` is put on sys.path so tests can `import config` the same way the scripts do.
-Note that `app.py` and the three pipeline scripts are deliberately NOT imported
-anywhere in the test suite: importing them would launch Streamlit or re-run the whole
-pipeline as a side effect. Where a test needs to assert something about those files,
-it does so statically (see test_single_source_of_truth.py).
+`src/` reaches the import path through `pythonpath = ["src"]` in
+pyproject.toml, not through a `sys.path.insert` here — one mechanism, declared
+in one place, and it applies to collection as well as to run time.
+
+`app.py` and the three pipeline scripts ARE imported by the suite
+(test_single_source_of_truth.py). That is safe because every one of them is
+import-safe: their work happens in `main()`, and nothing runs at module level.
+The identity assertions in that file depend on it.
 """
 
-import sys
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-SRC = ROOT / "src"
-sys.path.insert(0, str(SRC))
 
 PROCESSED = ROOT / "data" / "processed"
 RAW = ROOT / "data" / "raw"

@@ -15,14 +15,11 @@ the metadata bundled in the same file. That way, if the model is retrained with
 different thresholds, this app stays consistent automatically.
 """
 
-import sys
 from pathlib import Path
 
 import joblib
 import pandas as pd
 import streamlit as st
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # ---------------------------------------------------------------------------
 # CO2 calculation - imported, never re-declared
@@ -33,9 +30,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # drift apart. The only difference is that the generator adds ±3% random noise on top
 # for realism, while this app does not: the same input must always produce the same
 # output.
-from config import (  # noqa: E402
-    CARBON_PRICE_PER_TON, classify_risk, compare_data_fingerprint,
-    compute_co2_kg, compute_data_fingerprint,
+from config import (
+    CARBON_PRICE_PER_TON,
+    classify_risk,
+    compare_data_fingerprint,
+    compute_co2_kg,
+    compute_data_fingerprint,
 )
 
 # The model cannot reliably separate these two because of small sample sizes
