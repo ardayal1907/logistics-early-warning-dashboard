@@ -1,0 +1,31 @@
+# Keep the build context small and the layer cache stable.
+#
+# models/ is NOT excluded: the api and ui stages copy the artefact explicitly,
+# as their last layer.
+
+.git/
+.github/
+.venv/
+.pytest_cache/
+.hypothesis/
+.mypy_cache/
+.ruff_cache/
+**/__pycache__/
+*.py[cod]
+
+# 8.7 MB of report binary that no image serves.
+powerbi/
+notebooks/
+screenshots/
+docs/
+
+tests/
+htmlcov/
+coverage.xml
+.coverage
+
+# The star schema is mounted as a volume at runtime, not baked in.
+data/
+
+*.md
+!README.md

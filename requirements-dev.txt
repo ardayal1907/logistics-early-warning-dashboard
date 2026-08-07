@@ -23,6 +23,13 @@ hypothesis==6.165.2
 # nothing and should not carry it.
 pandera==0.32.1
 
+# The HTTP layer (logistics.api) and the client its tests drive it with.
+# Declared as the `api` extra in pyproject.toml, not a runtime dependency:
+# the trainer image carries no web framework.
+fastapi==0.141.1
+uvicorn[standard]==0.52.1
+httpx==0.28.1
+
 # Lint and type gates. Configured in pyproject.toml ([tool.ruff], [tool.mypy])
 # and enforced by .github/workflows/tests.yml.
 ruff==0.15.3
