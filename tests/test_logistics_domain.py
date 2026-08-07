@@ -182,10 +182,19 @@ def test_risk_tier_is_monotone_in_probability(p1, p2):
 
 @given(ratio=st.floats(0.01, 100, allow_nan=False))
 def test_threshold_derivation_matches_the_cost_algebra(ratio):
-    """p* = 1 / (1 + C_FN/C_FP). Falls in (0, 1) and decreases as FN gets dearer."""
+    """p* = 1 / (1 + C_FN/C_FP). Falls in (0, 1) and decreases as FN gets dearer.
+
+    The tolerance is half a unit in the last rounded place PLUS a float-noise
+    margin, not exactly half. `threshold_for_cost_ratio` rounds to two decimals,
+    so the worst case is a tie exactly on the midpoint: ratio=0.6 gives
+    1/1.6 = 0.625, which rounds half-to-even down to 0.62, and the residual
+    evaluates to 0.005000000000000004 — just over a plain `abs=0.005`. Hypothesis
+    found that example. The margin encodes "no worse than the rounding" without
+    making the assertion depend on which side of a tie a float lands.
+    """
     p_star = risk.threshold_for_cost_ratio(ratio)
     assert 0.0 <= p_star <= 1.0
-    assert p_star == pytest.approx(1.0 / (1.0 + ratio), abs=0.005)
+    assert p_star == pytest.approx(1.0 / (1.0 + ratio), abs=0.005 + 1e-9)
 
 
 def test_threshold_is_monotone_decreasing_in_the_cost_ratio():

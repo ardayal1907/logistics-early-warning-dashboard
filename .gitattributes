@@ -1,5 +1,16 @@
-*.csv -text
+# The catch-all MUST come first: git applies the last matching line per
+# attribute, so a trailing `* text=auto` silently overrode every specific rule
+# below it. That is what made *.csv normalise despite the `-text` above it.
+* text=auto
+
+# CSV bytes are hashed and the digests are recorded in the model metadata
+# (fingerprint.SOURCE_TABLES / SCORED_TABLE). eol=lf pins the checkout to LF on
+# every platform, so the same file has the same SHA-256 on Windows and Linux.
+# `-text` would only stop git from converting; it would not stop a CRLF file
+# from being committed and then hashing differently on the next machine.
+# This is the storage-side half of write_csv_deterministically().
+*.csv text eol=lf
+
 *.pkl binary
 *.pbix binary
 *.dax text eol=lf
-* text=auto
