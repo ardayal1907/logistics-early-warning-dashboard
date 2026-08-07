@@ -16,7 +16,6 @@ import ast
 
 import pytest
 
-import app
 import config
 import generate_logistics_data as gen
 import ml_delay_risk_pipeline as ml
@@ -27,18 +26,18 @@ SHARED_NAMES = {
     "HIGH_RISK_THRESHOLD", "MEDIUM_RISK_THRESHOLD",
 }
 SHARED_FUNCS = {"compute_co2_kg", "classify_risk"}
-CONSUMERS = ["app.py", "generate_logistics_data.py", "ml_delay_risk_pipeline.py"]
+
+# `app.py` is the Streamlit entrypoint shim; the UI itself is the module below
+# it. Both are checked STATICALLY only — importing either one would drag
+# streamlit into the test session, which is the dependency migration step 3
+# removed (V8 in docs/MIGRATION.md). The scoring path they rely on is covered
+# by tests/contract/test_ui_matches_legacy_scoring.py, which is a stronger
+# guarantee than an identity check: it compares actual numbers over 1,500 rows.
+CONSUMERS = ["app.py", "generate_logistics_data.py", "ml_delay_risk_pipeline.py",
+             "logistics/ui/streamlit_app.py"]
 
 
 # --- Identity: the consumers hold the very same objects --------------------
-
-def test_app_shares_the_carbon_function_object():
-    assert app.compute_co2_kg is config.compute_co2_kg
-
-
-def test_app_shares_the_risk_function_object():
-    assert app.classify_risk is config.classify_risk
-
 
 def test_pipeline_shares_the_risk_function_object():
     assert ml.classify_risk is config.classify_risk
@@ -58,10 +57,9 @@ def test_pipeline_thresholds_are_the_config_values():
     assert ml.COST_FN_OVER_FP == config.COST_FN_OVER_FP
 
 
-def test_the_generator_and_the_app_agree_on_a_concrete_case():
-    """Same inputs, same deterministic figure, through two different modules."""
+def test_the_generator_and_the_domain_agree_on_a_concrete_case():
+    """Same inputs, same deterministic figure, reached two different ways."""
     args = (450.0, 12.0, "Diesel Truck", "Storm", "High")
-    assert app.compute_co2_kg(*args) == config.compute_co2_kg(*args)
     manual = (450.0 * 12.0 * gen.EMISSION_FACTOR["Diesel Truck"]
               + gen.BASE_EMISSION["Diesel Truck"]) \
         * gen.WEATHER_CO2_MULT["Storm"] * gen.TRAFFIC_CO2_MULT["High"]
@@ -70,8 +68,8 @@ def test_the_generator_and_the_app_agree_on_a_concrete_case():
 
 # --- Import safety: the refactor's core promise ----------------------------
 
-@pytest.mark.parametrize("module", [app, gen, ml],
-                         ids=["app", "generate_logistics_data", "ml_delay_risk_pipeline"])
+@pytest.mark.parametrize("module", [gen, ml],
+                         ids=["generate_logistics_data", "ml_delay_risk_pipeline"])
 def test_modules_expose_a_main_entry_point(module):
     """Importing must do nothing; work happens only when main() is called.
 
