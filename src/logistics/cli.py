@@ -13,17 +13,13 @@ These commands are installed by `pip install -e .` and are what an orchestrator
     logistics-train         train, evaluate and persist the model
     logistics-score         batch-score a CSV through the new service
 
-Honest scope note. The first three currently delegate to the legacy flat modules
-in `src/`, which still resolve their own paths internally. What they gain here is
-real but limited: structured logging, a `--log-level` flag, a non-zero exit code
-on a typed failure, and a stable name that does not depend on a file path. Full
-path injection arrives in migration step 2, when those modules move into the
-package and take their directories from `Settings`. Claiming otherwise would put
-a promise in the interface that the implementation does not keep.
+Every one of them now runs on `logistics.pipelines`, which takes its
+directories from `Settings`. The bridge imports of the legacy flat modules are
+gone (V5 in docs/MIGRATION.md closed in migration step 4), so these commands
+work from an installed wheel with no repository checkout:
 
-`logistics-score` is not a wrapper. It runs entirely on the new service and
-therefore already honours every setting, including the artefact checksum gate
-and the prediction log.
+    pip install .
+    LOGISTICS_RAW_DIR=/data/raw LOGISTICS_PROCESSED_DIR=/data/out logistics-etl
 """
 
 from __future__ import annotations
@@ -39,6 +35,10 @@ from logistics.errors import LogisticsError
 from logistics.settings import Settings
 
 logger = logging.getLogger("logistics")
+
+# Imported by name rather than from logistics.pipelines.train, so that
+# `logistics-etl --help` does not pay for scikit-learn's import time.
+TRAIN_STAGES = ("evaluate", "score", "train", "all")
 
 
 def _configure_logging(level: str) -> None:
@@ -83,44 +83,78 @@ def _run(stage: str, fn) -> int:  # type: ignore[no-untyped-def]
 
 
 # ---------------------------------------------------------------------------
-# Legacy pipeline stages
+# Pipeline stages
 # ---------------------------------------------------------------------------
-def generate_data(argv: Sequence[str] | None = None) -> int:
-    args = _base_parser("Generate the synthetic source dataset.").parse_args(argv)
-    _configure_logging(args.log_level)
-
-    import generate_logistics_data
-
-    return _run("generate", generate_logistics_data.main)
-
-
-def run_etl(argv: Sequence[str] | None = None) -> int:
-    args = _base_parser("Build the star schema from the raw CSV.").parse_args(argv)
-    _configure_logging(args.log_level)
-
-    import etl_star_schema
-
-    return _run("etl", etl_star_schema.main)
-
-
-def train_model(argv: Sequence[str] | None = None) -> int:
-    args = _base_parser("Train, evaluate and persist the delay-risk model.").parse_args(argv)
-    _configure_logging(args.log_level)
-
-    import ml_delay_risk_pipeline
-    from logistics.infrastructure.fingerprint import write_checksum_sidecar
-
-    settings = Settings.from_env(
+def _settings_from(args: argparse.Namespace) -> Settings:
+    return Settings.from_env(
         **({"project_root": args.project_root} if args.project_root else {})
     )
 
+
+def generate_data(argv: Sequence[str] | None = None) -> int:
+    parser = _base_parser("Generate the synthetic source dataset.")
+    parser.add_argument("--report", action="store_true",
+                        help="Print the full summary to stdout as well as logging.")
+    args = parser.parse_args(argv)
+    _configure_logging(args.log_level)
+
+    from logistics.pipelines import generate
+    from logistics.pipelines.report import render_generation_report
+
+    settings = _settings_from(args)
+
+    def _generate() -> None:
+        frame = generate.main(settings)
+        if args.report:
+            print(render_generation_report(frame, generate.TARGET_DELAY_RATE))
+
+    return _run("generate", _generate)
+
+
+def run_etl(argv: Sequence[str] | None = None) -> int:
+    parser = _base_parser("Build the star schema from the raw CSV.")
+    parser.add_argument("--report", action="store_true",
+                        help="Print the full summary to stdout as well as logging.")
+    args = parser.parse_args(argv)
+    _configure_logging(args.log_level)
+
+    from logistics.pipelines import etl
+    from logistics.pipelines.report import render_etl_report
+
+    settings = _settings_from(args)
+
+    def _etl() -> None:
+        tables = etl.main(settings)
+        if args.report:
+            print(render_etl_report(**tables))
+
+    return _run("etl", _etl)
+
+
+def train_model(argv: Sequence[str] | None = None) -> int:
+    parser = _base_parser("Train, evaluate and persist the delay-risk model.")
+    parser.add_argument("--stage", default="all", choices=list(TRAIN_STAGES),
+                        help="Run one stage instead of the whole pipeline.")
+    parser.add_argument("--report", action="store_true",
+                        help="Print the metrics report to stdout as well as logging.")
+    args = parser.parse_args(argv)
+    _configure_logging(args.log_level)
+
+    from logistics.infrastructure.fingerprint import write_checksum_sidecar
+    from logistics.pipelines import train
+    from logistics.pipelines.report import render_training_report
+
+    settings = _settings_from(args)
+
     def _train_then_seal() -> None:
-        ml_delay_risk_pipeline.main()
+        summary = train.main(settings, stage=args.stage)
+        if args.report:
+            print(render_training_report(summary))
         # Close the gap the pipeline left open: it hashes the DATA it trained on
         # but never the artefact, which is the only file whose deserialisation
         # executes code. The sidecar is what load_bundle() checks before joblib
         # touches the bytes.
-        if settings.model_path.exists():
+        if args.stage in ("train", "all") and settings.model_path.exists():
             sidecar = write_checksum_sidecar(settings.model_path)
             logger.info("Wrote artefact checksum: %s", sidecar.name)
 

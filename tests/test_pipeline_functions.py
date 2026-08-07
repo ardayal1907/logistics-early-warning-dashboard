@@ -15,6 +15,7 @@ import pytest
 import etl_star_schema as etl
 import generate_logistics_data as gen
 import ml_delay_risk_pipeline as ml
+from logistics.errors import DataIntegrityError
 
 
 @pytest.fixture
@@ -96,7 +97,7 @@ def test_validate_star_schema_rejects_an_orphan_foreign_key(tiny_raw):
     dim_date = etl.build_dim_date(tiny_raw)
     fact = etl.build_fact_shipments(tiny_raw, dim_route)
     fact.loc[0, "Vendor_ID"] = "VEND-999"       # a vendor that does not exist
-    with pytest.raises(AssertionError, match="Vendor_ID"):
+    with pytest.raises(DataIntegrityError, match="Vendor_ID"):
         etl.validate_star_schema(fact, dim_vendor, dim_route, dim_date)
 
 
@@ -211,7 +212,7 @@ def test_chronological_split_puts_all_test_dates_after_training():
 def test_chronological_split_rejects_unsorted_input():
     df = pd.DataFrame({"Full_Date": pd.to_datetime(
         ["2026-03-01", "2026-01-01", "2026-02-01", "2026-04-01"])})
-    with pytest.raises(AssertionError, match="Chronological leakage"):
+    with pytest.raises(DataIntegrityError, match="Chronological leakage"):
         ml.chronological_split(df, train_fraction=0.5)
 
 
@@ -291,5 +292,5 @@ def test_validate_output_schema_rejects_a_renamed_column(fact_with_ml, dim_vendo
                                                          dim_route, dim_date):
     tables = {"dim_vendor": dim_vendor, "dim_route": dim_route, "dim_date": dim_date}
     broken = fact_with_ml.rename(columns={"Risk_Level": "RiskLevel"})
-    with pytest.raises(AssertionError, match="column structure changed"):
+    with pytest.raises(DataIntegrityError, match="column structure changed"):
         ml.validate_output_schema(broken, fact_with_ml, tables)
