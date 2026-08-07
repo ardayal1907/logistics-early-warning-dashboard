@@ -18,6 +18,11 @@ pytest-cov==7.0.0
 # and never recorded here, so a clean checkout could not run the suite.
 hypothesis==6.165.2
 
+# Data contracts (logistics.contracts). Declared as the `contracts` extra in
+# pyproject.toml rather than a runtime dependency: a serving image validates
+# nothing and should not carry it.
+pandera==0.32.1
+
 # Lint and type gates. Configured in pyproject.toml ([tool.ruff], [tool.mypy])
 # and enforced by .github/workflows/tests.yml.
 ruff==0.15.3

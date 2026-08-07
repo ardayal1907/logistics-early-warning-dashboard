@@ -62,9 +62,15 @@ ui = ["streamlit==1.60.0"]
 # deployable without a MILP solver on the image.
 optimization = ["pulp==3.4.2", "highspy==1.12.0"]
 
+# Data contracts. Optional for the same reason as `ui`: the scoring service
+# never imports logistics.contracts, so a serving image should not carry
+# pandera. Anything that VALIDATES data - the pipelines, CI, a notebook - does.
+contracts = ["pandera==0.32.1"]
+
 dev = [
     "pytest==9.1.1",
     "pytest-cov==7.0.0",
+    "pandera==0.32.1",
     # 6.143.4 was pinned here but has never existed on PyPI (the index goes
     # 6.143.1 -> 6.144.0), so `pip install -e .[dev]` could not resolve.
     "hypothesis==6.165.2",
